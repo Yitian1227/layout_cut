@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
-import { Stage, Layer, Image as KonvaImage, Group } from 'react-konva'
+import { Stage, Layer, Image as KonvaImage, Group, Transformer, Circle, Line } from 'react-konva'
 import useImage from 'use-image'
 import './App.css'
 
 // 圖層組件
-function LayerImage({ layer, index, isSelected, onDragStart, onDragMove, onDragEnd, onClick, imageSize, onMouseEnter, onMouseLeave }) {
+function LayerImage({ layer, index, isSelected, onPointerDown, onClick, onMouseEnter, onMouseLeave, layerRef, onTransformEnd }) {
   const [layerImage] = useImage(layer.src)
   
   if (!layerImage || !layer.visible) return null
@@ -16,31 +16,31 @@ function LayerImage({ layer, index, isSelected, onDragStart, onDragMove, onDragE
   
   return (
     <KonvaImage
+      ref={isSelected ? layerRef : null}
       image={layerImage}
       width={imageWidth}
       height={imageHeight}
       x={layer.x}
       y={layer.y}
-      draggable
-      onDragStart={onDragStart}
-      onDragMove={onDragMove}
-      onDragEnd={onDragEnd}
+      onPointerDown={onPointerDown}
       onClick={onClick}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       stroke={isSelected ? '#4a90e2' : undefined}
-      strokeWidth={isSelected ? 3 : 0}
+      strokeWidth={isSelected ? 2 : 0}
       shadowColor={isSelected ? '#4a90e2' : undefined}
-      shadowBlur={isSelected ? 10 : 0}
-      shadowOpacity={isSelected ? 0.5 : 0}
-      scaleX={isSelected ? 1.02 : 1}
-      scaleY={isSelected ? 1.02 : 1}
+      shadowBlur={isSelected ? 5 : 0}
+      shadowOpacity={isSelected ? 0.3 : 0}
+      scaleX={layer.scaleX || 1}
+      scaleY={layer.scaleY || 1}
+      rotation={layer.rotation || 0}
+      onTransformEnd={() => onTransformEnd(index)}
     />
   )
 }
 
 function App() {
-  const stepNames = ['上傳圖片', '進行圖片自動分割', '圖層編輯']
+  const stepNames = ['上傳圖片', '進行圖片自動分割', '圖層編輯', '生成動態']
   const [currentStep, setCurrentStep] = useState(1)
   const [completedSteps, setCompletedSteps] = useState([]) // 追蹤已完成的步驟
   const [baseImage, setBaseImage] = useState(null)
@@ -55,8 +55,19 @@ function App() {
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 })
   const [selectedLayers, setSelectedLayers] = useState([]) // 多選圖層（用於合併）
   const [hoveredLayerIndex, setHoveredLayerIndex] = useState(null) // 滑鼠懸停的圖層索引
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 }) // 拖拽時的偏移量
+  const [canvasScale, setCanvasScale] = useState(1) // 畫布縮放比例
+  const transformerRef = useRef(null) // Transformer 引用
+  const selectedLayerRef = useRef(null) // 選中圖層的引用
   
+  // 手動拖拽相關狀態
+  const [draggingLayerIndex, setDraggingLayerIndex] = useState(null) // 正在拖拽的圖層索引
+  const dragStartPosRef = useRef({ x: 0, y: 0 }) // 拖拽開始時的滑鼠位置（畫布座標）
+  const layerStartPosRef = useRef({ x: 0, y: 0 }) // 拖拽開始時的圖層位置
+  const dragOffsetRef = useRef({ x: 0, y: 0 }) // 滑鼠相對於圖層的偏移量
+  const isDraggingRef = useRef(false) // 是否正在拖拽（移動超過閾值）
+  const stageRef = useRef(null) // Stage 引用
+  const layerListRef = useRef(null) // 圖層列表容器引用
+  const layerItemRefs = useRef([]) // 圖層列表項引用數組
 
   const handleImageUpload = (event) => {
     const file = event.target.files[0]
@@ -77,12 +88,24 @@ function App() {
     }
   }
   
-  // 獲取圖片尺寸
+  // 獲取圖片尺寸並計算縮放比例
   useEffect(() => {
     if (baseImage) {
       const img = new window.Image()
       img.onload = () => {
-        setImageSize({ width: img.naturalWidth, height: img.naturalHeight })
+        const naturalWidth = img.naturalWidth
+        const naturalHeight = img.naturalHeight
+        setImageSize({ width: naturalWidth, height: naturalHeight })
+        
+        // 計算縮放比例，讓圖片等比例縮放到固定畫布尺寸內
+        const canvasMaxWidth = 1000  // 固定畫布寬度
+        const canvasMaxHeight = 800  // 固定畫布高度
+        
+        const scaleX = canvasMaxWidth / naturalWidth
+        const scaleY = canvasMaxHeight / naturalHeight
+        const scale = Math.min(scaleX, scaleY, 1) // 不放大，只縮小
+        
+        setCanvasScale(scale)
       }
       img.src = baseImage
     }
@@ -93,22 +116,83 @@ function App() {
     if (segmentedMasks.length > 0 && currentStep === 2 && !isSegmenting) {
       // 初始化圖層列表
       // segmentedMasks 現在是包含 { image, offsetX, offsetY, width, height } 的對象數組
-      const newLayers = segmentedMasks.map((maskData, index) => ({
+      const initialLayers = segmentedMasks.map((maskData, index) => ({
         id: index,
         src: maskData.image || maskData, // 兼容舊格式（如果還是字符串）
         visible: true,
         x: maskData.offsetX || 0, // 使用偏移量作為初始位置
         y: maskData.offsetY || 0,
         width: maskData.width || imageSize.width, // 記錄裁切後的寬度
-        height: maskData.height || imageSize.height // 記錄裁切後的高度
+        height: maskData.height || imageSize.height, // 記錄裁切後的高度
+        scaleX: 1, // 圖層縮放 X
+        scaleY: 1, // 圖層縮放 Y
+        rotation: 0 // 圖層旋轉角度
       }))
+      
+      // 計算所有圖層的邊界框，使群體居中
+      let newLayers = initialLayers
+      if (initialLayers.length > 0) {
+        // 計算所有圖層的邊界
+        let minX = Infinity
+        let minY = Infinity
+        let maxX = -Infinity
+        let maxY = -Infinity
+        
+        initialLayers.forEach(layer => {
+          const layerRight = layer.x + layer.width
+          const layerBottom = layer.y + layer.height
+          minX = Math.min(minX, layer.x)
+          minY = Math.min(minY, layer.y)
+          maxX = Math.max(maxX, layerRight)
+          maxY = Math.max(maxY, layerBottom)
+        })
+        
+        // 計算圖層群體的中心點
+        const groupCenterX = (minX + maxX) / 2
+        const groupCenterY = (minY + maxY) / 2
+        
+        // 計算畫布的中心點（考慮縮放後的實際尺寸）
+        const canvasWidth = 1000 / canvasScale
+        const canvasHeight = 800 / canvasScale
+        const canvasCenterX = canvasWidth / 2
+        const canvasCenterY = canvasHeight / 2
+        
+        // 計算偏移量，使圖層群體居中
+        const offsetX = canvasCenterX - groupCenterX
+        const offsetY = canvasCenterY - groupCenterY
+        
+        // 應用偏移量到所有圖層
+        newLayers = initialLayers.map(layer => ({
+          ...layer,
+          x: layer.x + offsetX,
+          y: layer.y + offsetY
+        }))
+      }
+      
       setLayers(newLayers)
       setSelectedLayerIndex(null)
       setSelectedLayers([])
       setHoveredLayerIndex(null)
       setCurrentStep(3)
+      // 初始化圖層列表項引用數組
+      layerItemRefs.current = new Array(newLayers.length).fill(null).map(() => ({ current: null }))
     }
-  }, [segmentedMasks, currentStep, isSegmenting, imageSize])
+  }, [segmentedMasks, currentStep, isSegmenting, imageSize, canvasScale])
+  
+  // 當選中圖層改變時，自動滾動到該圖層項目
+  useEffect(() => {
+    if (selectedLayerIndex !== null && layerItemRefs.current[selectedLayerIndex]) {
+      const element = layerItemRefs.current[selectedLayerIndex].current
+      if (element) {
+        // 使用 scrollIntoView 平滑滾動，並將項目置中
+        element.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+          inline: 'nearest'
+        })
+      }
+    }
+  }, [selectedLayerIndex])
 
   const handleButtonClick = () => {
     // 如果目前有圖片，清空所有狀態
@@ -124,6 +208,7 @@ function App() {
       setSelectedLayers([])
       setHoveredLayerIndex(null)
       setImageSize({ width: 0, height: 0 })
+      setCanvasScale(1)
       // 清空 file input 的值，確保選擇相同檔案時也會觸發 onChange
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
@@ -135,6 +220,14 @@ function App() {
 
   // 圖層操作函數
   const handleLayerClick = (index, e) => {
+    // 阻止事件冒泡
+    if (e) {
+      e.cancelBubble = true
+      if (e.evt) {
+        e.evt.cancelBubble = true
+      }
+    }
+    
     setSelectedLayerIndex(index)
     // 多選：按住 Ctrl/Cmd 鍵可以多選（適用於畫布和側邊欄）
     const isCtrlKey = e?.ctrlKey || e?.metaKey || e?.evt?.ctrlKey || e?.evt?.metaKey
@@ -152,6 +245,61 @@ function App() {
     }
   }
   
+  // 當選中圖層改變時，更新 Transformer
+  useEffect(() => {
+    if (transformerRef.current && selectedLayerRef.current && selectedLayerIndex !== null && selectedLayers.length === 1) {
+      // 確保 Transformer 綁定到選中的圖層
+      transformerRef.current.nodes([selectedLayerRef.current])
+      transformerRef.current.getLayer().batchDraw()
+    } else if (transformerRef.current) {
+      transformerRef.current.nodes([])
+      transformerRef.current.getLayer().batchDraw()
+    }
+  }, [selectedLayerIndex, selectedLayers.length])
+  
+  // 點擊畫布空白處取消選擇
+  const handleStageClick = (e) => {
+    // 如果正在拖拽，不處理點擊事件
+    if (draggingLayerIndex !== null) return
+    
+    const clickedOnEmpty = e.target === e.target.getStage()
+    if (clickedOnEmpty) {
+      setSelectedLayerIndex(null)
+      setSelectedLayers([])
+    }
+  }
+  
+  // 監聽 Transformer 的變換事件
+  const handleTransformEnd = (index) => {
+    if (!selectedLayerRef.current) return
+    
+    const node = selectedLayerRef.current
+    const newLayers = [...layers]
+    
+    // 獲取變換後的屬性
+    const scaleX = node.scaleX()
+    const scaleY = node.scaleY()
+    const rotation = node.rotation()
+    const x = node.x()
+    const y = node.y()
+    
+    // 更新圖層狀態
+    newLayers[index] = {
+      ...newLayers[index],
+      x,
+      y,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      rotation: rotation
+    }
+    
+    setLayers(newLayers)
+    
+    // 重置縮放（因為 Konva 的縮放是累積的）
+    node.scaleX(scaleX)
+    node.scaleY(scaleY)
+  }
+  
   const toggleLayerVisible = (index) => {
     setLayers(layers.map((layer, i) => 
       i === index ? { ...layer, visible: !layer.visible } : layer
@@ -167,6 +315,35 @@ function App() {
     setSelectedLayers(selectedLayers.filter(i => i !== index).map(i => i > index ? i - 1 : i))
   }
   
+  // 圖層縮放功能
+  const scaleLayer = (index, scaleDelta) => {
+    const newLayers = [...layers]
+    const currentScaleX = newLayers[index].scaleX || 1
+    const currentScaleY = newLayers[index].scaleY || 1
+    const newScaleX = Math.max(0.1, Math.min(3, currentScaleX + scaleDelta))
+    const newScaleY = Math.max(0.1, Math.min(3, currentScaleY + scaleDelta))
+    
+    newLayers[index] = {
+      ...newLayers[index],
+      scaleX: newScaleX,
+      scaleY: newScaleY
+    }
+    setLayers(newLayers)
+  }
+  
+  // 圖層旋轉功能
+  const rotateLayer = (index, rotationDelta) => {
+    const newLayers = [...layers]
+    const currentRotation = newLayers[index].rotation || 0
+    const newRotation = (currentRotation + rotationDelta) % 360
+    
+    newLayers[index] = {
+      ...newLayers[index],
+      rotation: newRotation
+    }
+    setLayers(newLayers)
+  }
+  
   const mergeLayers = async () => {
     if (selectedLayers.length < 2) {
       alert('請至少選擇兩個圖層進行合併')
@@ -177,7 +354,6 @@ function App() {
     const canvas = document.createElement('canvas')
     canvas.width = imageSize.width
     canvas.height = imageSize.height
-    const ctx = canvas.getContext('2d')
     
     // 按順序繪製選中的圖層
     const layersToMerge = [...selectedLayers].sort((a, b) => a - b)
@@ -214,14 +390,42 @@ function App() {
       // 重新獲取 context（因為 canvas 大小改變了）
       const mergedCtx = canvas.getContext('2d')
       
-      // 繪製所有圖層到 canvas，考慮它們的相對位置
+      // 繪製所有圖層到 canvas，考慮它們的相對位置、縮放和旋轉
       images.forEach((img, imgIndex) => {
         const layerIndex = layersToMerge[imgIndex]
         const layer = layers[layerIndex]
         // 計算相對於合併邊界的偏移量
         const relativeX = layer.x - mergedBounds.minX
         const relativeY = layer.y - mergedBounds.minY
-        mergedCtx.drawImage(img, relativeX, relativeY)
+        
+        // 保存當前狀態
+        mergedCtx.save()
+        
+        // 移動到圖層中心點
+        const centerX = relativeX + (layer.width || imageSize.width) / 2
+        const centerY = relativeY + (layer.height || imageSize.height) / 2
+        mergedCtx.translate(centerX, centerY)
+        
+        // 應用旋轉
+        const rotation = layer.rotation || 0
+        mergedCtx.rotate((rotation * Math.PI) / 180)
+        
+        // 應用縮放
+        const scaleX = layer.scaleX || 1
+        const scaleY = layer.scaleY || 1
+        mergedCtx.scale(scaleX, scaleY)
+        
+        // 繪製圖片（從中心點繪製）
+        mergedCtx.drawImage(
+          img,
+          -(layer.width || imageSize.width) / 2,
+          -(layer.height || imageSize.height) / 2,
+          layer.width || imageSize.width,
+          layer.height || imageSize.height
+        )
+        
+        // 恢復狀態
+        mergedCtx.restore()
       })
       
       // 生成合併後的 base64
@@ -259,49 +463,107 @@ function App() {
     }
   }
   
-  // 拖拽開始時，記錄滑鼠相對於圖層的位置
-  const handleLayerDragStart = (index, e) => {
+  // 滑鼠按下時，記錄初始位置
+  const handleLayerPointerDown = (index, e) => {
+    // 只處理左鍵點擊
+    if (e.evt && e.evt.button !== 0) return
+    
+    // 阻止事件冒泡，避免觸發 Stage 的點擊事件
+    e.cancelBubble = true
+    
     const stage = e.target.getStage()
     const pointerPos = stage.getPointerPosition()
     const layerX = e.target.x()
     const layerY = e.target.y()
     
-    // 計算滑鼠相對於圖層的偏移量
-    const offsetX = pointerPos.x - layerX
-    const offsetY = pointerPos.y - layerY
+    // 記錄拖拽開始狀態
+    setDraggingLayerIndex(index)
+    dragStartPosRef.current = { x: pointerPos.x, y: pointerPos.y }
+    layerStartPosRef.current = { x: layerX, y: layerY }
+    isDraggingRef.current = false
     
-    setDragOffset({ x: offsetX, y: offsetY })
+    // 考慮畫布的縮放比例，計算滑鼠相對於圖層的偏移量
+    const scale = stage.scaleX()
+    const offsetX = (pointerPos.x / scale) - layerX
+    const offsetY = (pointerPos.y / scale) - layerY
+    dragOffsetRef.current = { x: offsetX, y: offsetY }
+    
+    // 設置滑鼠樣式為抓取
+    stage.container().style.cursor = 'grabbing'
   }
   
-  // 拖拽過程中，調整圖層位置，使滑鼠始終在圖層上的同一相對位置
-  const handleLayerDragMove = (index, e) => {
+  // 滑鼠移動時，檢查是否開始拖拽
+  const handleStagePointerMove = (e) => {
+    if (draggingLayerIndex === null) return
+    
+    // 檢查是否按住左鍵（按鈕 0）
+    if (e.evt && e.evt.buttons !== undefined && e.evt.buttons !== 1) {
+      // 如果沒有按住左鍵，結束拖拽
+      handleStagePointerUp(e)
+      return
+    }
+    
     const stage = e.target.getStage()
     const pointerPos = stage.getPointerPosition()
     
-    // 計算新的圖層位置，使滑鼠相對於圖層的位置保持不變
-    const newX = pointerPos.x - dragOffset.x
-    const newY = pointerPos.y - dragOffset.y
+    if (!pointerPos) return
     
-    // 更新圖層位置
-    e.target.x(newX)
-    e.target.y(newY)
+    const layer = layers[draggingLayerIndex]
+    if (!layer) return
+    
+    // 計算移動距離（畫布座標）
+    const deltaX = Math.abs(pointerPos.x - dragStartPosRef.current.x)
+    const deltaY = Math.abs(pointerPos.y - dragStartPosRef.current.y)
+    const dragThreshold = 5 // 拖拽閾值（像素）
+    
+    // 只有移動距離超過閾值時才認為是拖拽
+    if (deltaX > dragThreshold || deltaY > dragThreshold) {
+      if (!isDraggingRef.current) {
+        isDraggingRef.current = true
+      }
+      
+      // 考慮畫布的縮放比例
+      const scale = stage.scaleX()
+      const newX = (pointerPos.x / scale) - dragOffsetRef.current.x
+      const newY = (pointerPos.y / scale) - dragOffsetRef.current.y
+      
+      // 更新圖層位置
+      const newLayers = [...layers]
+      newLayers[draggingLayerIndex] = {
+        ...newLayers[draggingLayerIndex],
+        x: newX,
+        y: newY
+      }
+      setLayers(newLayers)
+    }
   }
   
-  const handleLayerDragEnd = (index, e) => {
-    const newLayers = [...layers]
-    const newX = e.target.x()
-    const newY = e.target.y()
+  // 滑鼠放開時，結束拖拽
+  const handleStagePointerUp = (e) => {
+    if (draggingLayerIndex === null) return
     
-    // 更新圖層位置
-    newLayers[index] = {
-      ...newLayers[index],
-      x: newX,
-      y: newY
+    const stage = e.target.getStage()
+    
+    // 恢復滑鼠樣式
+    stage.container().style.cursor = 'default'
+    
+    // 如果沒有真正拖拽（只是點擊），恢復到原始位置
+    if (!isDraggingRef.current) {
+      const newLayers = [...layers]
+      newLayers[draggingLayerIndex] = {
+        ...newLayers[draggingLayerIndex],
+        x: layerStartPosRef.current.x,
+        y: layerStartPosRef.current.y
+      }
+      setLayers(newLayers)
     }
-    setLayers(newLayers)
     
-    // 清除拖拽偏移量
-    setDragOffset({ x: 0, y: 0 })
+    // 清除拖拽狀態
+    setDraggingLayerIndex(null)
+    dragStartPosRef.current = { x: 0, y: 0 }
+    layerStartPosRef.current = { x: 0, y: 0 }
+    dragOffsetRef.current = { x: 0, y: 0 }
+    isDraggingRef.current = false
   }
   
   // 滑鼠進入圖層時，設定 hoveredLayerIndex
@@ -491,14 +753,20 @@ function App() {
             padding: '10px',
             backgroundColor: '#f9f9f9',
             display: 'inline-block',
-            maxWidth: '80vw',
-            maxHeight: '80vh',
-            overflow: 'auto'
+            width: '1000px',
+            height: '800px',
+            overflow: 'hidden'
           }}>
             <Stage 
-              width={imageSize.width > 0 ? imageSize.width : 800} 
-              height={imageSize.height > 0 ? imageSize.height : 600}
+              ref={stageRef}
+              width={1000} 
+              height={800}
               style={{ border: '1px solid #ddd', borderRadius: '4px' }}
+              scaleX={canvasScale}
+              scaleY={canvasScale}
+              onPointerMove={handleStagePointerMove}
+              onPointerUp={handleStagePointerUp}
+              onClick={handleStageClick}
             >
               <Layer>
                 {/* 分割圖層（不使用底層基礎圖片） */}
@@ -511,61 +779,323 @@ function App() {
                       key={layer.id}
                       layer={layer}
                       index={index}
-                      isSelected={isSelected}
-                      imageSize={imageSize}
-                      onDragStart={(e) => handleLayerDragStart(index, e)}
-                      onDragMove={(e) => handleLayerDragMove(index, e)}
-                      onDragEnd={(e) => handleLayerDragEnd(index, e)}
+                      isSelected={isSelected && selectedLayerIndex === index}
+                      layerRef={selectedLayerIndex === index ? selectedLayerRef : null}
+                      onTransformEnd={handleTransformEnd}
+                      onPointerDown={(e) => handleLayerPointerDown(index, e)}
                       onClick={(e) => handleLayerClick(index, e)}
                       onMouseEnter={() => handleLayerMouseEnter(index)}
                       onMouseLeave={handleLayerMouseLeave}
                     />
                   )
                 })}
+                
+                {/* Transformer - 變換控制手柄 */}
+                {/* 只在選中單個圖層時顯示 Transformer */}
+                {selectedLayerIndex !== null && selectedLayers.length === 1 && (
+                  <Transformer
+                    ref={transformerRef}
+                    boundBoxFunc={(oldBox, newBox) => {
+                      // 限制最小尺寸
+                      if (Math.abs(newBox.width) < 5 || Math.abs(newBox.height) < 5) {
+                        return oldBox
+                      }
+                      return newBox
+                    }}
+                    rotateEnabled={true}
+                    enabledAnchors={[
+                      'top-left', 'top-right', 'bottom-left', 'bottom-right', // 四個角的旋轉手柄
+                      'middle-left', 'middle-right', 'top-center', 'bottom-center' // 邊緣的縮放手柄
+                    ]}
+                    borderEnabled={true}
+                    borderStroke="#4a90e2"
+                    borderStrokeWidth={2}
+                    anchorFill="#4a90e2"
+                    anchorStroke="#fff"
+                    anchorStrokeWidth={2}
+                    anchorSize={12}
+                    anchorCornerRadius={6}
+                    keepRatio={false}
+                    flipEnabled={false}
+                    // 自定義手柄樣式
+                    anchorShapeFunc={(ctx, anchor) => {
+                      const size = anchor.size()
+                      const x = anchor.x()
+                      const y = anchor.y()
+                      
+                      ctx.beginPath()
+                      
+                      // 判斷是旋轉手柄（四個角）還是縮放手柄（邊緣）
+                      const isRotateAnchor = ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(anchor.name())
+                      
+                      if (isRotateAnchor) {
+                        // 繪製旋轉手柄（圓形，暗示可以旋轉）
+                        ctx.arc(x, y, size / 2, 0, Math.PI * 2)
+                        ctx.fillStyle = '#4a90e2'
+                        ctx.fill()
+                        ctx.strokeStyle = '#fff'
+                        ctx.lineWidth = 2
+                        ctx.stroke()
+                        
+                        // 繪製彎曲箭頭
+                        ctx.beginPath()
+                        ctx.arc(x, y, size / 2 - 3, 0, Math.PI * 1.5)
+                        ctx.strokeStyle = '#fff'
+                        ctx.lineWidth = 2
+                        ctx.stroke()
+                        
+                        // 箭頭頭部
+                        ctx.beginPath()
+                        ctx.moveTo(x - size / 4, y - size / 2)
+                        ctx.lineTo(x, y - size / 2 - 3)
+                        ctx.lineTo(x + size / 4, y - size / 2)
+                        ctx.fillStyle = '#fff'
+                        ctx.fill()
+                      } else {
+                        // 繪製縮放手柄（方形，帶箭頭）
+                        const halfSize = size / 2
+                        ctx.fillStyle = '#4a90e2'
+                        ctx.fillRect(x - halfSize, y - halfSize, size, size)
+                        ctx.strokeStyle = '#fff'
+                        ctx.lineWidth = 2
+                        ctx.strokeRect(x - halfSize, y - halfSize, size, size)
+                        
+                        // 根據位置繪製箭頭方向
+                        if (anchor.name() === 'top-center' || anchor.name() === 'middle-left') {
+                          // 朝內箭頭
+                          ctx.beginPath()
+                          ctx.moveTo(x, y - halfSize + 2)
+                          ctx.lineTo(x - 3, y - halfSize + 6)
+                          ctx.lineTo(x + 3, y - halfSize + 6)
+                          ctx.closePath()
+                          ctx.fillStyle = '#fff'
+                          ctx.fill()
+                        } else {
+                          // 朝外箭頭
+                          ctx.beginPath()
+                          ctx.moveTo(x, y + halfSize - 2)
+                          ctx.lineTo(x - 3, y + halfSize - 6)
+                          ctx.lineTo(x + 3, y + halfSize - 6)
+                          ctx.closePath()
+                          ctx.fillStyle = '#fff'
+                          ctx.fill()
+                        }
+                      }
+                    }}
+                  />
+                )}
               </Layer>
             </Stage>
           </div>
           
-          {/* 側邊欄：圖層列表 */}
+          {/* 右側面板容器 */}
           <div style={{
             width: '250px',
-            border: '1px solid #e0e0e0',
-            borderRadius: '8px',
-            padding: '15px',
-            backgroundColor: '#fff',
-            maxHeight: '600px',
-            overflowY: 'auto'
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '15px'
           }}>
-            <h3 style={{ marginTop: 0, marginBottom: '15px', fontSize: '18px' }}>
-              圖層列表 ({layers.length})
-            </h3>
-            
-            {selectedLayers.length >= 2 && (
-              <button
-                onClick={mergeLayers}
-                style={{
-                  width: '100%',
-                  padding: '8px',
-                  marginBottom: '15px',
-                  backgroundColor: '#4a90e2',
-                  color: 'white',
-                  border: 'none',
+            {/* 控制面板 */}
+            <div style={{
+              border: '1px solid #e0e0e0',
+              borderRadius: '8px',
+              padding: '15px',
+              backgroundColor: '#f5f5f5'
+            }}>
+              <h3 style={{ marginTop: 0, marginBottom: '15px', fontSize: '18px', color: '#333' }}>
+                控制面板
+              </h3>
+              
+              {/* 合併按鈕 */}
+              {selectedLayers.length >= 2 && (
+                <button
+                  onClick={mergeLayers}
+                  style={{
+                    width: '100%',
+                    padding: '8px',
+                    marginBottom: '15px',
+                    backgroundColor: '#4a90e2',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  合併選中圖層 ({selectedLayers.length})
+                </button>
+              )}
+              
+              {/* 選中圖層的控制 */}
+              {selectedLayerIndex !== null && layers[selectedLayerIndex] && (
+                <div style={{
+                  padding: '10px',
+                  marginBottom: '10px',
+                  border: '1px solid #4a90e2',
                   borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '14px'
-                }}
-              >
-                合併選中圖層 ({selectedLayers.length})
-              </button>
-            )}
+                  backgroundColor: '#f0f8ff'
+                }}>
+                  <div style={{ marginBottom: '10px', fontWeight: 'bold', fontSize: '14px', color: '#333' }}>
+                    圖層 {selectedLayerIndex + 1} 控制
+                  </div>
+                  
+                  {/* 縮放控制 */}
+                  <div style={{ marginBottom: '10px' }}>
+                    <div style={{ fontSize: '12px', marginBottom: '5px', color: '#333' }}>縮放: {((layers[selectedLayerIndex].scaleX || 1) * 100).toFixed(0)}%</div>
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                      <button
+                        onClick={() => scaleLayer(selectedLayerIndex, -0.1)}
+                        style={{
+                          flex: 1,
+                          padding: '4px',
+                          fontSize: '12px',
+                          backgroundColor: '#4a90e2',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '3px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        -10%
+                      </button>
+                      <button
+                        onClick={() => scaleLayer(selectedLayerIndex, 0.1)}
+                        style={{
+                          flex: 1,
+                          padding: '4px',
+                          fontSize: '12px',
+                          backgroundColor: '#4a90e2',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '3px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        +10%
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* 旋轉控制 */}
+                  <div style={{ marginBottom: '10px' }}>
+                    <div style={{ fontSize: '12px', marginBottom: '5px', color: '#333' }}>旋轉: {(layers[selectedLayerIndex].rotation || 0).toFixed(0)}°</div>
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                      <button
+                        onClick={() => rotateLayer(selectedLayerIndex, -15)}
+                        style={{
+                          flex: 1,
+                          padding: '4px',
+                          fontSize: '12px',
+                          backgroundColor: '#4a90e2',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '3px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        -15°
+                      </button>
+                      <button
+                        onClick={() => rotateLayer(selectedLayerIndex, 15)}
+                        style={{
+                          flex: 1,
+                          padding: '4px',
+                          fontSize: '12px',
+                          backgroundColor: '#4a90e2',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '3px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        +15°
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* 顯示/隱藏和刪除按鈕 */}
+                  <div style={{ display: 'flex', gap: '5px' }}>
+                    <button
+                      onClick={() => toggleLayerVisible(selectedLayerIndex)}
+                      style={{
+                        flex: 1,
+                        padding: '6px',
+                        fontSize: '12px',
+                        backgroundColor: layers[selectedLayerIndex].visible ? '#4caf50' : '#ccc',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '3px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {layers[selectedLayerIndex].visible ? '顯示' : '隱藏'}
+                    </button>
+                    <button
+                      onClick={() => deleteLayer(selectedLayerIndex)}
+                      style={{
+                        flex: 1,
+                        padding: '6px',
+                        fontSize: '12px',
+                        backgroundColor: '#f44336',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '3px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      刪除
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              {/* 未選中圖層時的提示 */}
+              {selectedLayerIndex === null && selectedLayers.length === 0 && (
+                <div style={{ 
+                  padding: '10px', 
+                  fontSize: '12px', 
+                  color: '#888', 
+                  textAlign: 'center',
+                  fontStyle: 'italic'
+                }}>
+                  請選擇圖層以進行操作
+                </div>
+              )}
+            </div>
+            
+            {/* 圖層列表 */}
+            <div 
+              ref={layerListRef}
+              style={{
+                border: '1px solid #e0e0e0',
+                borderRadius: '8px',
+                padding: '15px',
+                backgroundColor: '#f5f5f5',
+                maxHeight: '500px',
+                overflowY: 'auto'
+              }}
+            >
+              <h3 style={{ marginTop: 0, marginBottom: '15px', fontSize: '18px', color: '#333' }}>
+                圖層列表 (共{layers.length}張)
+              </h3>
             
             {layers.map((layer, index) => {
               const isSelected = selectedLayerIndex === index || selectedLayers.includes(index)
               const isHovered = hoveredLayerIndex === index
               
+              // 確保引用數組有足夠的長度
+              if (!layerItemRefs.current[index]) {
+                layerItemRefs.current[index] = { current: null }
+              }
+              
               return (
                 <div
                   key={layer.id}
+                  ref={(el) => {
+                    if (layerItemRefs.current[index]) {
+                      layerItemRefs.current[index].current = el
+                    }
+                  }}
                   className={isHovered ? 'hovered' : ''}
                   style={{
                     padding: '10px',
@@ -574,54 +1104,49 @@ function App() {
                     borderRadius: '4px',
                     backgroundColor: isSelected ? '#e3f2fd' : (isHovered ? '#fff9c4' : '#f9f9f9'),
                     cursor: 'pointer',
-                    transition: 'all 0.2s ease'
+                    transition: 'all 0.2s ease',
+                    position: 'relative'
                   }}
                   onClick={(e) => handleLayerClick(index, e)}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontWeight: isSelected ? 'bold' : 'normal' }}>
-                      圖層 {index + 1}
-                    </span>
-                    <div style={{ display: 'flex', gap: '5px' }}>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          toggleLayerVisible(index)
-                        }}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: '12px',
-                          backgroundColor: layer.visible ? '#4caf50' : '#ccc',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '3px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        {layer.visible ? '顯示' : '隱藏'}
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          deleteLayer(index)
-                        }}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: '12px',
-                          backgroundColor: '#f44336',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '3px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        刪除
-                      </button>
-                    </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <img 
+                      src={layer.src} 
+                      className="thumbnail" 
+                      alt={`圖層 ${index + 1}`}
+                      style={{
+                        width: '60px',
+                        height: '60px',
+                        objectFit: 'contain',
+                        border: isSelected ? '2px solid #4a90e2' : '1px solid #ddd',
+                        borderRadius: '4px',
+                        backgroundColor: '#fff',
+                        padding: '2px',
+                        opacity: layer.visible ? 1 : 0.3
+                      }}
+                    />
                   </div>
+                  {!layer.visible && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      fontSize: '12px',
+                      color: '#f44336',
+                      fontWeight: 'bold',
+                      pointerEvents: 'none',
+                      backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                      padding: '2px 6px',
+                      borderRadius: '3px'
+                    }}>
+                      隱藏
+                    </div>
+                  )}
                 </div>
               )
             })}
+            </div>
           </div>
         </div>
       )}

@@ -49,3 +49,9 @@
 .read-the-docs {
   color: #888;
 }
+
+.thumbnail {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
