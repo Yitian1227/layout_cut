@@ -16,6 +16,12 @@
   - 下載：https://git-scm.com 或用 winget
   - 驗證：`git --version`
 
+- **SAM 自動分割模型下載**
+  - 下載：https://github.com/facebookresearch/segment-anything?tab=readme-ov-file 
+  網址中的 Model Checkpoints---->vit_b: ViT-B SAM model.
+  
+  - 放到: \layout_cut\models
+
 ------------------------------------------------------------------------------
 ### 前端套件安裝（npm）
 
