@@ -1,43 +1,14 @@
 import { useState, useRef, useEffect } from 'react'
-import { Stage, Layer, Image as KonvaImage, Group, Transformer, Circle, Line } from 'react-konva'
-import useImage from 'use-image'
 import './App.css'
 
-// 圖層組件
-function LayerImage({ layer, index, isSelected, onPointerDown, onClick, onMouseEnter, onMouseLeave, layerRef, onTransformEnd }) {
-  const [layerImage] = useImage(layer.src)
-  
-  if (!layerImage || !layer.visible) return null
-  
-  // 使用圖層的實際尺寸（裁切後的尺寸），而不是原始圖片尺寸
-  // 這樣可以讓 hover 更精準，因為圖層只包含實際物件範圍
-  const imageWidth = layer.width || layerImage.width || layerImage.naturalWidth || 0
-  const imageHeight = layer.height || layerImage.height || layerImage.naturalHeight || 0
-  
-  return (
-    <KonvaImage
-      ref={isSelected ? layerRef : null}
-      image={layerImage}
-      width={imageWidth}
-      height={imageHeight}
-      x={layer.x}
-      y={layer.y}
-      onPointerDown={onPointerDown}
-      onClick={onClick}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      stroke={isSelected ? '#4a90e2' : undefined}
-      strokeWidth={isSelected ? 2 : 0}
-      shadowColor={isSelected ? '#4a90e2' : undefined}
-      shadowBlur={isSelected ? 5 : 0}
-      shadowOpacity={isSelected ? 0.3 : 0}
-      scaleX={layer.scaleX || 1}
-      scaleY={layer.scaleY || 1}
-      rotation={layer.rotation || 0}
-      onTransformEnd={() => onTransformEnd(index)}
-    />
-  )
-}
+// 導入組件
+import ProgressBar from './components/ProgressBar'
+import UploadSection from './components/UploadSection'
+import SegmentButton from './components/SegmentButton'
+import SegmentedPreview from './components/SegmentedPreview'
+import KonvaCanvas from './components/Canvas/KonvaCanvas'
+import LeftSidebar from './components/LeftSidebar'
+import InstructionText from './components/InstructionText'
 
 function App() {
   const stepNames = ['上傳圖片', '進行圖片自動分割', '圖層編輯', '生成動態']
@@ -78,17 +49,17 @@ function App() {
         setBaseImage(reader.result)
         // 標記 step 1 為完成
         setCompletedSteps([1])
-        setCurrentStep(1)
         // 清空圖層編輯相關狀態
         setLayers([])
         setSelectedLayerIndex(null)
         setSelectedLayers([])
+        // 注意：currentStep 會在 useEffect 中根據 imageSize 設置為 3
       }
       reader.readAsDataURL(file)
     }
   }
   
-  // 獲取圖片尺寸並計算縮放比例
+  // 獲取圖片尺寸並計算縮放比例，然後進入畫布模式
   useEffect(() => {
     if (baseImage) {
       const img = new window.Image()
@@ -106,6 +77,9 @@ function App() {
         const scale = Math.min(scaleX, scaleY, 1) // 不放大，只縮小
         
         setCanvasScale(scale)
+        
+        // 圖片載入完成後，立即進入畫布模式（step 3）
+        setCurrentStep(3)
       }
       img.src = baseImage
     }
@@ -617,569 +591,111 @@ function App() {
     }
   }
 
-
   return (
-    <div className="card">
-      {/* 進度條 */}
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center',
-        marginBottom: '30px',
-        padding: '20px'
-      }}>
-        {stepNames.map((stepName, index) => {
-          const stepNumber = index + 1
-          const isCompleted = completedSteps.includes(stepNumber)
-          const isCurrent = currentStep === stepNumber
-          const isActive = isCurrent || (isCompleted && !isSegmenting)
-          // 在 loading 狀態時，step 2 不應該顯示為完成
-          const showCompleted = isCompleted && !(isSegmenting && index === 1)
-          
-          return (
-            <div key={index} style={{ display: 'flex', alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <div
-                  style={{
-                    width: '40px',
-                    height: '40px',
-                    borderRadius: '50%',
-                    backgroundColor: showCompleted ? '#4a90e2' : 'transparent',
-                    border: showCompleted ? 'none' : '2px solid #b0b0b0',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: showCompleted ? 'white' : '#b0b0b0',
-                    fontWeight: 'bold',
-                    fontSize: '14px'
-                  }}
-                >
-                  {showCompleted ? '✓' : stepNumber}
-                </div>
-                <div style={{ 
-                  marginTop: '8px', 
-                  fontSize: '14px',
-                  color: isActive ? '#4a90e2' : '#b0b0b0',
-                  fontWeight: isActive ? 'bold' : 'normal',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}>
-                  {stepName}
-                  {isSegmenting && index === 1 && (
-                    <div
-                      style={{
-                        width: '16px',
-                        height: '16px',
-                        border: '2px solid #4a90e2',
-                        borderTopColor: 'transparent',
-                        borderRadius: '50%',
-                        animation: 'spin 1s linear infinite'
-                      }}
-                    />
-                  )}
-                </div>
-              </div>
-              {index < stepNames.length - 1 && (
-                <div
-                  style={{
-                    width: '80px',
-                    height: '2px',
-                    backgroundColor: completedSteps.includes(stepNumber + 1) ? '#4a90e2' : '#e0e0e0',
-                    margin: '0 10px',
-                    marginTop: '-20px'
-                  }}
-                />
-              )}
-            </div>
-          )
-        })}
-      </div>
-
-      <input
-        type="file"
-        accept="image/*"
-        ref={fileInputRef}
-        onChange={handleImageUpload}
-        style={{ display: 'none' }}
+    <div className="card" style={currentStep === 3 && imageSize.width > 0 ? { padding: 0, margin: 0 } : {}}>
+      {/* 進度條 - 始終固定在頂部 */}
+      <ProgressBar 
+        stepNames={stepNames}
+        currentStep={currentStep}
+        completedSteps={completedSteps}
+        isSegmenting={isSegmenting}
       />
-      <button onClick={handleButtonClick}>
-        {baseImage ? '替換圖片' : '新增圖片'}
-      </button>
-      {/* 圖片預覽（在 step 1-2 時顯示，step 3 時不顯示因為畫布上已有） */}
-      {baseImage && currentStep !== 3 && (
-        <div style={{ marginTop: '20px' }}>
-          <img 
-            src={baseImage} 
-            alt="Base Image Preview" 
-            style={{ maxWidth: '100%', maxHeight: '400px', borderRadius: '8px' }}
-          />
-        </div>
-      )}
 
-      {/* 分割按鈕（始終顯示，如果有圖片） */}
-      {baseImage && (
-        <div style={{ marginTop: '20px' }}>
-          <button 
-            onClick={handleSegmentImage}
-            disabled={isSegmenting}
-            style={{
-              padding: '10px 20px',
-              fontSize: '16px',
-              backgroundColor: isSegmenting ? '#ccc' : '#4a90e2',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: isSegmenting ? 'not-allowed' : 'pointer'
-            }}
-          >
-            {isSegmenting ? '分割中...' : (segmentedMasks.length > 0 ? '重新進行分割圖層' : '開始分割圖層')}
-          </button>
-        </div>
+      {/* 說明文字 - 顯示在進度條和畫布之間 */}
+      <InstructionText
+        currentStep={currentStep}
+        baseImage={baseImage}
+        segmentedMasks={segmentedMasks}
+      />
+
+      {/* 非畫布模式時顯示的內容 */}
+      {currentStep !== 3 && (
+        <>
+          {/* 上傳區域 */}
+          <UploadSection
+            baseImage={baseImage}
+            fileInputRef={fileInputRef}
+            onImageUpload={handleImageUpload}
+            onButtonClick={handleButtonClick}
+            currentStep={currentStep}
+          />
+
+          {/* 分割按鈕 */}
+          <SegmentButton
+            baseImage={baseImage}
+            isSegmenting={isSegmenting}
+            hasSegmentedMasks={segmentedMasks.length > 0}
+            onSegment={handleSegmentImage}
+          />
+        </>
       )}
 
       {/* 圖層編輯模式 */}
       {currentStep === 3 && imageSize.width > 0 && (
         <div style={{ 
           display: 'flex', 
-          gap: '20px', 
-          marginTop: '30px',
-          alignItems: 'flex-start'
+          flexDirection: 'column',
+          width: '100%',
+          height: '100vh'
         }}>
-          {/* 畫布區域 */}
-          <div style={{ 
-            border: '1px solid #e0e0e0', 
-            borderRadius: '8px',
-            padding: '10px',
-            backgroundColor: '#f9f9f9',
-            display: 'inline-block',
-            width: '1000px',
-            height: '800px',
-            overflow: 'hidden'
-          }}>
-            <Stage 
-              ref={stageRef}
-              width={1000} 
-              height={800}
-              style={{ border: '1px solid #ddd', borderRadius: '4px' }}
-              scaleX={canvasScale}
-              scaleY={canvasScale}
-              onPointerMove={handleStagePointerMove}
-              onPointerUp={handleStagePointerUp}
-              onClick={handleStageClick}
-            >
-              <Layer>
-                {/* 分割圖層（不使用底層基礎圖片） */}
-                {/* Konva 的 z-index 順序：後渲染的圖層在上層，所以如果多個圖層重疊，最後渲染的（index 最大的）會優先觸發事件 */}
-                {layers.map((layer, index) => {
-                  const isSelected = selectedLayerIndex === index || selectedLayers.includes(index)
-                  
-                  return (
-                    <LayerImage
-                      key={layer.id}
-                      layer={layer}
-                      index={index}
-                      isSelected={isSelected && selectedLayerIndex === index}
-                      layerRef={selectedLayerIndex === index ? selectedLayerRef : null}
-                      onTransformEnd={handleTransformEnd}
-                      onPointerDown={(e) => handleLayerPointerDown(index, e)}
-                      onClick={(e) => handleLayerClick(index, e)}
-                      onMouseEnter={() => handleLayerMouseEnter(index)}
-                      onMouseLeave={handleLayerMouseLeave}
-                    />
-                  )
-                })}
-                
-                {/* Transformer - 變換控制手柄 */}
-                {/* 只在選中單個圖層時顯示 Transformer */}
-                {selectedLayerIndex !== null && selectedLayers.length === 1 && (
-                  <Transformer
-                    ref={transformerRef}
-                    boundBoxFunc={(oldBox, newBox) => {
-                      // 限制最小尺寸
-                      if (Math.abs(newBox.width) < 5 || Math.abs(newBox.height) < 5) {
-                        return oldBox
-                      }
-                      return newBox
-                    }}
-                    rotateEnabled={true}
-                    enabledAnchors={[
-                      'top-left', 'top-right', 'bottom-left', 'bottom-right', // 四個角的旋轉手柄
-                      'middle-left', 'middle-right', 'top-center', 'bottom-center' // 邊緣的縮放手柄
-                    ]}
-                    borderEnabled={true}
-                    borderStroke="#4a90e2"
-                    borderStrokeWidth={2}
-                    anchorFill="#4a90e2"
-                    anchorStroke="#fff"
-                    anchorStrokeWidth={2}
-                    anchorSize={12}
-                    anchorCornerRadius={6}
-                    keepRatio={false}
-                    flipEnabled={false}
-                    // 自定義手柄樣式
-                    anchorShapeFunc={(ctx, anchor) => {
-                      const size = anchor.size()
-                      const x = anchor.x()
-                      const y = anchor.y()
-                      
-                      ctx.beginPath()
-                      
-                      // 判斷是旋轉手柄（四個角）還是縮放手柄（邊緣）
-                      const isRotateAnchor = ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(anchor.name())
-                      
-                      if (isRotateAnchor) {
-                        // 繪製旋轉手柄（圓形，暗示可以旋轉）
-                        ctx.arc(x, y, size / 2, 0, Math.PI * 2)
-                        ctx.fillStyle = '#4a90e2'
-                        ctx.fill()
-                        ctx.strokeStyle = '#fff'
-                        ctx.lineWidth = 2
-                        ctx.stroke()
-                        
-                        // 繪製彎曲箭頭
-                        ctx.beginPath()
-                        ctx.arc(x, y, size / 2 - 3, 0, Math.PI * 1.5)
-                        ctx.strokeStyle = '#fff'
-                        ctx.lineWidth = 2
-                        ctx.stroke()
-                        
-                        // 箭頭頭部
-                        ctx.beginPath()
-                        ctx.moveTo(x - size / 4, y - size / 2)
-                        ctx.lineTo(x, y - size / 2 - 3)
-                        ctx.lineTo(x + size / 4, y - size / 2)
-                        ctx.fillStyle = '#fff'
-                        ctx.fill()
-                      } else {
-                        // 繪製縮放手柄（方形，帶箭頭）
-                        const halfSize = size / 2
-                        ctx.fillStyle = '#4a90e2'
-                        ctx.fillRect(x - halfSize, y - halfSize, size, size)
-                        ctx.strokeStyle = '#fff'
-                        ctx.lineWidth = 2
-                        ctx.strokeRect(x - halfSize, y - halfSize, size, size)
-                        
-                        // 根據位置繪製箭頭方向
-                        if (anchor.name() === 'top-center' || anchor.name() === 'middle-left') {
-                          // 朝內箭頭
-                          ctx.beginPath()
-                          ctx.moveTo(x, y - halfSize + 2)
-                          ctx.lineTo(x - 3, y - halfSize + 6)
-                          ctx.lineTo(x + 3, y - halfSize + 6)
-                          ctx.closePath()
-                          ctx.fillStyle = '#fff'
-                          ctx.fill()
-                        } else {
-                          // 朝外箭頭
-                          ctx.beginPath()
-                          ctx.moveTo(x, y + halfSize - 2)
-                          ctx.lineTo(x - 3, y + halfSize - 6)
-                          ctx.lineTo(x + 3, y + halfSize - 6)
-                          ctx.closePath()
-                          ctx.fillStyle = '#fff'
-                          ctx.fill()
-                        }
-                      }
-                    }}
-                  />
-                )}
-              </Layer>
-            </Stage>
-          </div>
-          
-          {/* 右側面板容器 */}
+          {/* 左側面板 */}
+          <LeftSidebar
+            baseImage={baseImage}
+            fileInputRef={fileInputRef}
+            onImageUpload={handleImageUpload}
+            onButtonClick={handleButtonClick}
+            layers={layers}
+            selectedLayerIndex={selectedLayerIndex}
+            selectedLayers={selectedLayers}
+            hoveredLayerIndex={hoveredLayerIndex}
+            layerItemRefs={layerItemRefs}
+            onLayerClick={handleLayerClick}
+            onMergeLayers={mergeLayers}
+            onScaleLayer={scaleLayer}
+            onRotateLayer={rotateLayer}
+            onToggleLayerVisible={toggleLayerVisible}
+            onDeleteLayer={deleteLayer}
+          />
+            
+          {/* 畫布區域 - 占滿剩餘空間（扣除進度條和左側面板） */}
           <div style={{
-            width: '250px',
+            marginLeft: '320px',
+            marginTop: '80px', // 為進度條留出空間（padding 20px * 2 + 內容高度約 40px）
+            width: 'calc(100% - 320px)',
+            height: 'calc(100vh - 80px)', // 扣除進度條高度
             display: 'flex',
-            flexDirection: 'column',
-            gap: '15px'
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'auto'
           }}>
-            {/* 控制面板 */}
-            <div style={{
-              border: '1px solid #e0e0e0',
-              borderRadius: '8px',
-              padding: '15px',
-              backgroundColor: '#f5f5f5'
-            }}>
-              <h3 style={{ marginTop: 0, marginBottom: '15px', fontSize: '18px', color: '#333' }}>
-                控制面板
-              </h3>
-              
-              {/* 合併按鈕 */}
-              {selectedLayers.length >= 2 && (
-                <button
-                  onClick={mergeLayers}
-                  style={{
-                    width: '100%',
-                    padding: '8px',
-                    marginBottom: '15px',
-                    backgroundColor: '#4a90e2',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '14px'
-                  }}
-                >
-                  合併選中圖層 ({selectedLayers.length})
-                </button>
-              )}
-              
-              {/* 選中圖層的控制 */}
-              {selectedLayerIndex !== null && layers[selectedLayerIndex] && (
-                <div style={{
-                  padding: '10px',
-                  marginBottom: '10px',
-                  border: '1px solid #4a90e2',
-                  borderRadius: '4px',
-                  backgroundColor: '#f0f8ff'
-                }}>
-                  <div style={{ marginBottom: '10px', fontWeight: 'bold', fontSize: '14px', color: '#333' }}>
-                    圖層 {selectedLayerIndex + 1} 控制
-                  </div>
-                  
-                  {/* 縮放控制 */}
-                  <div style={{ marginBottom: '10px' }}>
-                    <div style={{ fontSize: '12px', marginBottom: '5px', color: '#333' }}>縮放: {((layers[selectedLayerIndex].scaleX || 1) * 100).toFixed(0)}%</div>
-                    <div style={{ display: 'flex', gap: '5px' }}>
-                      <button
-                        onClick={() => scaleLayer(selectedLayerIndex, -0.1)}
-                        style={{
-                          flex: 1,
-                          padding: '4px',
-                          fontSize: '12px',
-                          backgroundColor: '#4a90e2',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '3px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        -10%
-                      </button>
-                      <button
-                        onClick={() => scaleLayer(selectedLayerIndex, 0.1)}
-                        style={{
-                          flex: 1,
-                          padding: '4px',
-                          fontSize: '12px',
-                          backgroundColor: '#4a90e2',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '3px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        +10%
-                      </button>
-                    </div>
-                  </div>
-                  
-                  {/* 旋轉控制 */}
-                  <div style={{ marginBottom: '10px' }}>
-                    <div style={{ fontSize: '12px', marginBottom: '5px', color: '#333' }}>旋轉: {(layers[selectedLayerIndex].rotation || 0).toFixed(0)}°</div>
-                    <div style={{ display: 'flex', gap: '5px' }}>
-                      <button
-                        onClick={() => rotateLayer(selectedLayerIndex, -15)}
-                        style={{
-                          flex: 1,
-                          padding: '4px',
-                          fontSize: '12px',
-                          backgroundColor: '#4a90e2',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '3px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        -15°
-                      </button>
-                      <button
-                        onClick={() => rotateLayer(selectedLayerIndex, 15)}
-                        style={{
-                          flex: 1,
-                          padding: '4px',
-                          fontSize: '12px',
-                          backgroundColor: '#4a90e2',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '3px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        +15°
-                      </button>
-                    </div>
-                  </div>
-                  
-                  {/* 顯示/隱藏和刪除按鈕 */}
-                  <div style={{ display: 'flex', gap: '5px' }}>
-                    <button
-                      onClick={() => toggleLayerVisible(selectedLayerIndex)}
-                      style={{
-                        flex: 1,
-                        padding: '6px',
-                        fontSize: '12px',
-                        backgroundColor: layers[selectedLayerIndex].visible ? '#4caf50' : '#ccc',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '3px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      {layers[selectedLayerIndex].visible ? '顯示' : '隱藏'}
-                    </button>
-                    <button
-                      onClick={() => deleteLayer(selectedLayerIndex)}
-                      style={{
-                        flex: 1,
-                        padding: '6px',
-                        fontSize: '12px',
-                        backgroundColor: '#f44336',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '3px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      刪除
-                    </button>
-                  </div>
-                </div>
-              )}
-              
-              {/* 未選中圖層時的提示 */}
-              {selectedLayerIndex === null && selectedLayers.length === 0 && (
-                <div style={{ 
-                  padding: '10px', 
-                  fontSize: '12px', 
-                  color: '#888', 
-                  textAlign: 'center',
-                  fontStyle: 'italic'
-                }}>
-                  請選擇圖層以進行操作
-                </div>
-              )}
-            </div>
-            
-            {/* 圖層列表 */}
-            <div 
-              ref={layerListRef}
-              style={{
-                border: '1px solid #e0e0e0',
-                borderRadius: '8px',
-                padding: '15px',
-                backgroundColor: '#f5f5f5',
-                maxHeight: '500px',
-                overflowY: 'auto'
-              }}
-            >
-              <h3 style={{ marginTop: 0, marginBottom: '15px', fontSize: '18px', color: '#333' }}>
-                圖層列表 (共{layers.length}張)
-              </h3>
-            
-            {layers.map((layer, index) => {
-              const isSelected = selectedLayerIndex === index || selectedLayers.includes(index)
-              const isHovered = hoveredLayerIndex === index
-              
-              // 確保引用數組有足夠的長度
-              if (!layerItemRefs.current[index]) {
-                layerItemRefs.current[index] = { current: null }
-              }
-              
-              return (
-                <div
-                  key={layer.id}
-                  ref={(el) => {
-                    if (layerItemRefs.current[index]) {
-                      layerItemRefs.current[index].current = el
-                    }
-                  }}
-                  className={isHovered ? 'hovered' : ''}
-                  style={{
-                    padding: '10px',
-                    marginBottom: '8px',
-                    border: isSelected ? '2px solid #4a90e2' : (isHovered ? '2px solid #ffc107' : '1px solid #e0e0e0'),
-                    borderRadius: '4px',
-                    backgroundColor: isSelected ? '#e3f2fd' : (isHovered ? '#fff9c4' : '#f9f9f9'),
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    position: 'relative'
-                  }}
-                  onClick={(e) => handleLayerClick(index, e)}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <img 
-                      src={layer.src} 
-                      className="thumbnail" 
-                      alt={`圖層 ${index + 1}`}
-                      style={{
-                        width: '60px',
-                        height: '60px',
-                        objectFit: 'contain',
-                        border: isSelected ? '2px solid #4a90e2' : '1px solid #ddd',
-                        borderRadius: '4px',
-                        backgroundColor: '#fff',
-                        padding: '2px',
-                        opacity: layer.visible ? 1 : 0.3
-                      }}
-                    />
-                  </div>
-                  {!layer.visible && (
-                    <div style={{
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: 'translate(-50%, -50%)',
-                      fontSize: '12px',
-                      color: '#f44336',
-                      fontWeight: 'bold',
-                      pointerEvents: 'none',
-                      backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                      padding: '2px 6px',
-                      borderRadius: '3px'
-                    }}>
-                      隱藏
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-            </div>
+            <KonvaCanvas
+              baseImage={baseImage}
+              imageSize={imageSize}
+              layers={layers}
+              selectedLayerIndex={selectedLayerIndex}
+              selectedLayers={selectedLayers}
+              canvasScale={canvasScale}
+              onLayerClick={handleLayerClick}
+              onLayerPointerDown={handleLayerPointerDown}
+              onStageClick={handleStageClick}
+              onStagePointerMove={handleStagePointerMove}
+              onStagePointerUp={handleStagePointerUp}
+              onLayerMouseEnter={handleLayerMouseEnter}
+              onLayerMouseLeave={handleLayerMouseLeave}
+              onTransformEnd={handleTransformEnd}
+              transformerRef={transformerRef}
+              selectedLayerRef={selectedLayerRef}
+              stageRef={stageRef}
+            />
           </div>
         </div>
       )}
       
       {/* 分割結果預覽（僅在 step 2 時顯示） */}
-      {currentStep === 2 && segmentedMasks.length > 0 && (
-        <div style={{ 
-          marginTop: '30px',
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: '16px'
-        }}>
-          {segmentedMasks.map((maskData, index) => {
-            // 兼容新舊格式：如果是對象則使用 image 屬性，否則直接使用
-            const maskSrc = typeof maskData === 'string' ? maskData : maskData.image
-            return (
-              <img
-                key={index}
-                src={maskSrc}
-                alt={`Segmented Mask ${index + 1}`}
-                style={{
-                  width: '100%',
-                  aspectRatio: '1',
-                  objectFit: 'contain',
-                  border: '1px solid #e0e0e0',
-                  borderRadius: '8px',
-                  backgroundColor: '#f5f5f5'
-                }}
-              />
-            )
-          })}
-        </div>
-      )}
+      <SegmentedPreview
+        segmentedMasks={segmentedMasks}
+        currentStep={currentStep}
+      />
     </div>
   )
 }
