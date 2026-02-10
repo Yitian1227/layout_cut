@@ -131,24 +131,73 @@ function KonvaCanvas({
     }
   }
 
-  // 画笔模式下的鼠标事件处理
+  // 画笔模式下的鼠标事件处理 - 事件绑定在 Stage 上
   const handleBrushPointerDown = (e) => {
+    console.log("pointerdown 觸發！isBrushMode:", isBrushMode)
+    
     if (!isBrushMode) return
     
     const stage = e.target.getStage()
+    if (!stage) {
+      console.log("無法獲取 stage")
+      return
+    }
     
-    // 检查点击是否在画布内
+    // 获取 Stage 的缩放和尺寸
+    const stageScale = stage.scaleX()
+    const stageWidth = stage.width()
+    const stageHeight = stage.height()
+    
+    // 获取容器信息
+    const container = stage.container()
+    const containerRect = container.getBoundingClientRect()
+    
+    // 方法1：使用 getPointerPosition()（相对于 Stage 容器）
     const pointerPos = stage.getPointerPosition()
-    if (!pointerPos) return
     
-    const scale = stage.scaleX()
-    const x = pointerPos.x / scale
-    const y = pointerPos.y / scale
+    // 方法2：从事件对象获取坐标（相对于页面）
+    const evt = e.evt || e
+    const pageX = evt.clientX || evt.pageX
+    const pageY = evt.clientY || evt.pageY
     
-    // 检查坐标是否在画布范围内
-    if (x < 0 || x > 1000 || y < 0 || y > 800) return
+    // 计算相对于容器的坐标
+    const relativeX = pageX - containerRect.left
+    const relativeY = pageY - containerRect.top
     
-    const clickPoint = { x, y }
+    // 使用事件坐标（更可靠）
+    const x = relativeX / stageScale
+    const y = relativeY / stageScale
+    
+    // 调试信息
+    console.log("pointerdown 觸發！座標：", {
+      getPointerPosition: pointerPos,
+      eventCoords: { pageX, pageY },
+      containerRect: {
+        left: containerRect.left,
+        top: containerRect.top,
+        width: containerRect.width,
+        height: containerRect.height
+      },
+      relativeCoords: { x: relativeX, y: relativeY },
+      stageScale: stageScale,
+      stageSize: { width: stageWidth, height: stageHeight },
+      calculated: { x, y }
+    })
+    
+    // 对于 Brush 工具，初始点击也需要使用实际坐标（不限制），这样可以在任何位置开始绘制
+    // 对于 Polygon 和 Rectangle 工具，限制在边界内
+    let clickPoint
+    if (toolType === 'brush') {
+      // Brush 工具：使用实际坐标，不限制边界（允许在画布外开始绘制）
+      clickPoint = { x, y }
+      console.log("座標（Brush，不限制邊界）:", { x, y })
+    } else {
+      // Polygon 和 Rectangle 工具：限制在边界内
+      const clampedX = Math.max(0, Math.min(stageWidth, x))
+      const clampedY = Math.max(0, Math.min(stageHeight, y))
+      clickPoint = { x: clampedX, y: clampedY }
+      console.log("座標有效，繼續處理:", { x: clampedX, y: clampedY })
+    }
     
     // Polygon工具：添加点
     if (toolType === 'polygon') {
@@ -262,17 +311,39 @@ function KonvaCanvas({
 
   const handleBrushPointerMove = (e) => {
     const stage = e.target.getStage()
-    const point = stage.getPointerPosition()
-    const scale = stage.scaleX()
-    const x = point.x / scale
-    const y = point.y / scale
+    if (!stage) return
+    
+    // 获取容器信息（与 handleBrushPointerDown 保持一致）
+    const container = stage.container()
+    const containerRect = container.getBoundingClientRect()
+    
+    // 从事件对象获取坐标（相对于页面）
+    const evt = e.evt || e
+    const pageX = evt.clientX || evt.pageX
+    const pageY = evt.clientY || evt.pageY
+    
+    // 计算相对于容器的坐标
+    const relativeX = pageX - containerRect.left
+    const relativeY = pageY - containerRect.top
+    
+    const stageScale = stage.scaleX()
+    const stageWidth = stage.width()
+    const stageHeight = stage.height()
+    
+    // 将像素坐标转换为逻辑坐标（除以 scale）
+    // 注意：对于 Brush 工具，不限制坐标范围，允许超出边界，这样线条可以跟随鼠标
+    let x = relativeX / stageScale
+    let y = relativeY / stageScale
+    
     const movePoint = { x, y }
     
     // Polygon工具：更新悬停点（仅在未完成且有至少一个点时）
     if (toolType === 'polygon') {
       if (hoverPointRef && polygonPoints && polygonPoints.length > 0 && !isPolygonClosed) {
         // 检查坐标是否在画布范围内
-        if (movePoint.x >= 0 && movePoint.x <= 1000 && movePoint.y >= 0 && movePoint.y <= 800) {
+        const stageWidth = stage.width()
+        const stageHeight = stage.height()
+        if (movePoint.x >= 0 && movePoint.x <= stageWidth && movePoint.y >= 0 && movePoint.y <= stageHeight) {
           hoverPointRef.current = movePoint
           // 强制重绘以显示连线
           if (stageRef.current) {
@@ -308,13 +379,14 @@ function KonvaCanvas({
         return
       }
       
+      // Brush 工具：不限制坐标范围，允许超出边界，线条可以跟随鼠标
+      // 直接使用计算出的坐标，不进行边界限制
       if (currentPath && currentPath.length > 0) {
         const newPath = [...currentPath, movePoint]
         onBrushPathUpdate(newPath)
         
-        if (brushLayerRef.current) {
-          brushLayerRef.current.batchDraw()
-        }
+        // 使用 stage.batchDraw() 而不是 brushLayerRef.current.batchDraw()
+        stage.batchDraw()
       }
     }
   }
@@ -327,14 +399,26 @@ function KonvaCanvas({
       return
     }
     
+    const stage = e.target.getStage()
+    if (!stage) return
+    
     // Rectangle工具：结束绘制矩形
     if (toolType === 'rectangle' && isDrawingRectangle) {
-      const stage = e.target.getStage()
-      const point = stage.getPointerPosition()
-      const scale = stage.scaleX()
-      const x = point.x / scale
-      const y = point.y / scale
-      if (onRectangleEnd) {
+      // 手动计算坐标（与 handleBrushPointerDown 保持一致）
+      const pointerPos = stage.getPointerPosition()
+      if (pointerPos && onRectangleEnd) {
+        const stageScale = stage.scaleX()
+        const stageWidth = stage.width()
+        const stageHeight = stage.height()
+        
+        // 将像素坐标转换为逻辑坐标（除以 scale）
+        let x = pointerPos.x / stageScale
+        let y = pointerPos.y / stageScale
+        
+        // 限制坐标在有效范围内
+        x = Math.max(0, Math.min(stageWidth, x))
+        y = Math.max(0, Math.min(stageHeight, y))
+        
         onRectangleEnd({ x, y })
       }
       return
@@ -370,7 +454,11 @@ function KonvaCanvas({
       display: 'inline-block',
       width: '1000px',
       height: '800px',
-      overflow: 'hidden'
+      // 确保没有 overflow-hidden、padding、transform 影响坐标
+      overflow: 'visible',
+      padding: 0,
+      margin: 0,
+      position: 'relative'
     }}>
       <Stage 
         ref={stageRef}
@@ -379,10 +467,16 @@ function KonvaCanvas({
         style={{ border: '1px solid #ddd', borderRadius: '4px' }}
         scaleX={canvasScale}
         scaleY={canvasScale}
+        // 事件绑定在 Stage 上，确保整个画布都可以响应
         onPointerMove={isBrushMode ? handleBrushPointerMove : onStagePointerMove}
         onPointerUp={isBrushMode ? handleBrushPointerUp : onStagePointerUp}
         onPointerDown={isBrushMode ? handleBrushPointerDown : undefined}
         onClick={isBrushMode ? undefined : onStageClick}
+        // 确保 Stage 的 position 为 (0, 0)，避免坐标偏移
+        x={0}
+        y={0}
+        // 确保 Stage 可以接收所有事件
+        listening={true}
       >
         <Layer>
           {/* 1. 背景圖片（最底层） */}
@@ -406,10 +500,13 @@ function KonvaCanvas({
                 isSelected={isSelected && selectedLayerIndex === index}
                 layerRef={selectedLayerIndex === index ? selectedLayerRef : null}
                 onTransformEnd={onTransformEnd}
-                onPointerDown={(e) => onLayerPointerDown(index, e)}
-                onClick={(e) => onLayerClick(index, e)}
-                onMouseEnter={() => onLayerMouseEnter(index)}
-                onMouseLeave={onLayerMouseLeave}
+                // 在画笔模式下，禁用 LayerImage 的事件处理，让事件冒泡到 Stage
+                onPointerDown={isBrushMode ? undefined : (e) => onLayerPointerDown(index, e)}
+                onClick={isBrushMode ? undefined : (e) => onLayerClick(index, e)}
+                onMouseEnter={isBrushMode ? undefined : () => onLayerMouseEnter(index)}
+                onMouseLeave={isBrushMode ? undefined : onLayerMouseLeave}
+                // 在画笔模式下，禁用事件监听，确保事件能到达 Stage
+                listening={!isBrushMode}
               />
             )
           })}

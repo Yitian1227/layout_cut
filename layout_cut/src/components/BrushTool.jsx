@@ -80,15 +80,19 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
       setAddPaths([])
       setSubtractPaths([])
     } else if (brushMode === 'add') {
-      // 加选模式：合并路径，使用精确轮廓
+      // 加选模式：保持路径独立，不立即合并
+      // 如果 brushPath 为空，将新路径设为 brushPath
+      // 否则将新路径添加到 addPaths 数组
       setBrushPath(prevPath => {
-        if (prevPath && prevPath.length > 0) {
-          return mergePaths(prevPath, path)
+        if (!prevPath || prevPath.length === 0) {
+          // brushPath 为空，设为新路径
+          return path
+        } else {
+          // brushPath 已存在，将新路径添加到 addPaths
+          setAddPaths(prev => [...prev, path])
+          return prevPath
         }
-        return path
       })
-      // 清空加选路径数组（因为已经合并到主路径）
-      setAddPaths([])
     } else if (brushMode === 'subtract') {
       // 减选模式：擦除路径相交的部分
       const allExistingPaths = [brushPath, ...addPaths].filter(p => p && p.length > 0)
@@ -209,14 +213,17 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
         setAddPaths([])
         setSubtractPaths([])
       } else if (brushMode === 'add') {
-        // 加选模式：合并路径
+        // 加选模式：保持路径独立，不立即合并
         setBrushPath(prevPath => {
-          if (prevPath && prevPath.length > 0) {
-            return mergePaths(prevPath, rectPoints)
+          if (!prevPath || prevPath.length === 0) {
+            // brushPath 为空，设为新路径
+            return rectPoints
+          } else {
+            // brushPath 已存在，将新路径添加到 addPaths
+            setAddPaths(prev => [...prev, rectPoints])
+            return prevPath
           }
-          return rectPoints
         })
-        setAddPaths([])
       } else if (brushMode === 'subtract') {
         // 减选模式：擦除路径
         const allExistingPaths = [brushPath, ...addPaths].filter(p => p && p.length > 0)
@@ -456,6 +463,17 @@ function BrushTool({
   brushSize,
   onBrushSizeChange
 }) {
+  // 控制工具显示：true 显示所有工具，false 仅显示笔刷工具
+  const SHOW_POLYGON_TOOL = false
+  const SHOW_RECTANGLE_TOOL = false
+  
+  // 如果隐藏了工具选择，确保默认使用笔刷工具
+  useEffect(() => {
+    if (!SHOW_POLYGON_TOOL && !SHOW_RECTANGLE_TOOL && toolType !== 'brush') {
+      onSetToolType('brush')
+    }
+  }, [SHOW_POLYGON_TOOL, SHOW_RECTANGLE_TOOL, toolType, onSetToolType])
+  
   return (
     <div style={{
       padding: '15px',
@@ -483,60 +501,67 @@ function BrushTool({
             </div>
             
             {/* 工具类型选择 */}
-            <div style={{
-              display: 'flex',
-              gap: '4px',
-              marginBottom: '10px'
-            }}>
-              <button
-                onClick={() => onSetToolType('brush')}
-                style={{
-                  flex: 1,
-                  padding: '6px 10px',
-                  fontSize: '12px',
-                  backgroundColor: toolType === 'brush' ? '#4a90e2' : '#f0f0f0',
-                  color: toolType === 'brush' ? 'white' : '#333',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: toolType === 'brush' ? '600' : '400'
-                }}
-              >
-                畫筆
-              </button>
-              <button
-                onClick={() => onSetToolType('polygon')}
-                style={{
-                  flex: 1,
-                  padding: '6px 10px',
-                  fontSize: '12px',
-                  backgroundColor: toolType === 'polygon' ? '#4a90e2' : '#f0f0f0',
-                  color: toolType === 'polygon' ? 'white' : '#333',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: toolType === 'polygon' ? '600' : '400'
-                }}
-              >
-                多邊形
-              </button>
-              <button
-                onClick={() => onSetToolType('rectangle')}
-                style={{
-                  flex: 1,
-                  padding: '6px 10px',
-                  fontSize: '12px',
-                  backgroundColor: toolType === 'rectangle' ? '#4a90e2' : '#f0f0f0',
-                  color: toolType === 'rectangle' ? 'white' : '#333',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: toolType === 'rectangle' ? '600' : '400'
-                }}
-              >
-                矩形
-              </button>
-            </div>
+            {(SHOW_POLYGON_TOOL || SHOW_RECTANGLE_TOOL) && (
+              <div style={{
+                display: 'flex',
+                gap: '4px',
+                marginBottom: '10px'
+              }}>
+                <button
+                  onClick={() => onSetToolType('brush')}
+                  style={{
+                    flex: 1,
+                    padding: '6px 10px',
+                    fontSize: '12px',
+                    backgroundColor: toolType === 'brush' ? '#4a90e2' : '#f0f0f0',
+                    color: toolType === 'brush' ? 'white' : '#333',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontWeight: toolType === 'brush' ? '600' : '400'
+                  }}
+                >
+                  畫筆
+                </button>
+                {SHOW_POLYGON_TOOL && (
+                  <button
+                    onClick={() => onSetToolType('polygon')}
+                    style={{
+                      flex: 1,
+                      padding: '6px 10px',
+                      fontSize: '12px',
+                      backgroundColor: toolType === 'polygon' ? '#4a90e2' : '#f0f0f0',
+                      color: toolType === 'polygon' ? 'white' : '#333',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: toolType === 'polygon' ? '600' : '400'
+                    }}
+                  >
+                    多邊形
+                  </button>
+                )}
+                {SHOW_RECTANGLE_TOOL && (
+                  <button
+                    onClick={() => onSetToolType('rectangle')}
+                    style={{
+                      flex: 1,
+                      padding: '6px 10px',
+                      fontSize: '12px',
+                      backgroundColor: toolType === 'rectangle' ? '#4a90e2' : '#f0f0f0',
+                      color: toolType === 'rectangle' ? 'white' : '#333',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: toolType === 'rectangle' ? '600' : '400'
+                    }}
+                  >
+                    矩形
+                  </button>
+                )}
+              </div>
+            )}
+            
             
             {/* 画笔尺寸调整 */}
             {toolType === 'brush' && (

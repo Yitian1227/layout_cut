@@ -1,7 +1,7 @@
 import useImage from 'use-image'
 import { Image as KonvaImage } from 'react-konva'
 
-function LayerImage({ layer, index, isSelected, onPointerDown, onClick, onMouseEnter, onMouseLeave, layerRef, onTransformEnd }) {
+function LayerImage({ layer, index, isSelected, onPointerDown, onClick, onMouseEnter, onMouseLeave, layerRef, onTransformEnd, listening }) {
   const [layerImage] = useImage(layer.src)
   
   if (!layerImage || !layer.visible) return null
@@ -32,6 +32,7 @@ function LayerImage({ layer, index, isSelected, onPointerDown, onClick, onMouseE
       scaleY={layer.scaleY || 1}
       rotation={layer.rotation || 0}
       onTransformEnd={() => onTransformEnd(index)}
+      listening={listening !== undefined ? listening : true}
     />
   )
 }
