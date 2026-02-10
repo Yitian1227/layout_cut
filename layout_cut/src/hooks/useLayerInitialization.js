@@ -17,6 +17,7 @@ export function useLayerInitialization(
       // segmentedMasks 現在是包含 { image, offsetX, offsetY, width, height } 的對象數組
       const initialLayers = segmentedMasks.map((maskData, index) => ({
         id: index,
+        name: `圖層 ${index + 1}`, // 圖層名稱
         src: maskData.image || maskData, // 兼容舊格式（如果還是字符串）
         visible: true,
         x: maskData.offsetX || 0, // 使用偏移量作為初始位置

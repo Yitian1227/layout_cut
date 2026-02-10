@@ -3,6 +3,7 @@ import ControlPanel from './ControlPanel'
 import LayerList from './LayerList/LayerList'
 import InstructionText from './InstructionText'
 import BrushTool from './BrushTool'
+import SegmentButton from './SegmentButton'
 import '../App.css'
 
 function LeftSidebar({
@@ -31,7 +32,8 @@ function LeftSidebar({
   brushSize,
   onBrushSizeChange,
   onConfirmBrush,
-  hasBrushPath
+  hasBrushPath,
+  isSegmenting
 }) {
   return (
     <div 
@@ -115,9 +117,20 @@ function LeftSidebar({
         onSetBrushMode={onSetBrushMode}
         brushSize={brushSize}
         onBrushSizeChange={onBrushSizeChange}
-        onConfirmBrush={onConfirmBrush}
         hasBrushPath={hasBrushPath}
       />
+      
+      {/* 開始分割圖層按鈕 - 取代原本的"確認圈選"按鈕 */}
+      {baseImage && (
+        <div style={{ padding: '15px', flexShrink: 0 }}>
+          <SegmentButton
+            baseImage={baseImage}
+            isSegmenting={isSegmenting}
+            hasSegmentedMasks={segmentedMasks && segmentedMasks.length > 0}
+            onSegment={onConfirmBrush}
+          />
+        </div>
+      )}
       
       {/* 圖層列表 */}
       <div style={{ padding: '15px', flex: 1, minHeight: 0 }}>

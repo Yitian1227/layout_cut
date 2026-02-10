@@ -57,11 +57,11 @@ function LayerList({
             }}
             onClick={(e) => onLayerClick(index, e)}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
               <img 
                 src={layer.src} 
                 className="thumbnail" 
-                alt={`圖層 ${index + 1}`}
+                alt={layer.name || `圖層 ${index + 1}`}
                 style={{
                   width: '60px',
                   height: '60px',
@@ -73,6 +73,16 @@ function LayerList({
                   opacity: layer.visible ? 1 : 0.3
                 }}
               />
+              <div style={{
+                fontSize: '12px',
+                color: isSelected ? '#4a90e2' : '#666',
+                fontWeight: isSelected ? '600' : '400',
+                textAlign: 'center',
+                wordBreak: 'break-word',
+                maxWidth: '100%'
+              }}>
+                {layer.name || `圖層 ${index + 1}`}
+              </div>
             </div>
             {!layer.visible && (
               <div style={{

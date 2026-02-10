@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+from segment_anything.utils.transforms import ResizeLongestSide
 import torch
 from PIL import Image
 import numpy as np
@@ -197,6 +198,9 @@ def process_mask_to_binary(mask_image):
             mask_image = mask_image[:, :, :3]
         if mask_image.shape[2] == 3:
             # RGB 圖像，轉換為灰度
+            # 確保是 uint8 類型
+            if mask_image.dtype != np.uint8:
+                mask_image = np.clip(mask_image, 0, 255).astype(np.uint8)
             gray = cv2.cvtColor(mask_image, cv2.COLOR_RGB2GRAY)
             binary_mask = gray
         else:
@@ -205,18 +209,36 @@ def process_mask_to_binary(mask_image):
     else:
         # 如果維度不對，嘗試重塑
         print(f"警告: mask_image 形狀異常: {mask_image.shape}")
-        # 嘗試重塑為 2D
-        if mask_image.size > 0:
-            # 計算合理的 H 和 W
-            total_pixels = mask_image.size
-            # 假設是正方形或接近正方形
-            side = int(np.sqrt(total_pixels))
-            if side * side == total_pixels:
-                binary_mask = mask_image.reshape(side, side)
+        # 如果是4D或更高，嘗試降維
+        if len(mask_image.shape) == 4:
+            # [1, H, W, C] 或 [B, H, W, C] -> [H, W, C]
+            if mask_image.shape[0] == 1:
+                mask_image = mask_image[0]
             else:
-                raise ValueError(f"無法處理 mask_image 形狀: {mask_image.shape}")
+                mask_image = mask_image[0]  # 取第一個batch
+            # 遞歸處理
+            return process_mask_to_binary(mask_image)
+        elif len(mask_image.shape) > 4:
+            # 更高維度，嘗試重塑
+            print(f"警告: mask_image 維度過高: {mask_image.shape}，嘗試降維")
+            # 假設最後兩個維度是 H 和 W
+            h, w = mask_image.shape[-2], mask_image.shape[-1]
+            # 重塑為 [H, W]
+            mask_image = mask_image.reshape(-1, h, w)[0]
+            return process_mask_to_binary(mask_image)
         else:
-            raise ValueError(f"mask_image 為空或形狀異常: {mask_image.shape}")
+            # 嘗試重塑為 2D
+            if mask_image.size > 0:
+                # 計算合理的 H 和 W
+                total_pixels = mask_image.size
+                # 假設是正方形或接近正方形
+                side = int(np.sqrt(total_pixels))
+                if side * side == total_pixels:
+                    binary_mask = mask_image.reshape(side, side)
+                else:
+                    raise ValueError(f"無法處理 mask_image 形狀: {mask_image.shape}")
+            else:
+                raise ValueError(f"mask_image 為空或形狀異常: {mask_image.shape}")
     
     # 確保是 2D 數組
     if len(binary_mask.shape) != 2:
@@ -262,10 +284,31 @@ async def segment_with_mask(
         binary_mask = process_mask_to_binary(mask_image)
         
         # 確保 binary_mask 是 2D 數組 (H, W)
+        # 如果仍然是3D或更高維度，強制轉換為2D
+        if len(binary_mask.shape) > 2:
+            print(f"警告: binary_mask 形狀異常: {binary_mask.shape}，嘗試轉換為2D")
+            # 如果是3D，取第一個通道或轉換為灰度
+            if len(binary_mask.shape) == 3:
+                if binary_mask.shape[2] == 1:
+                    binary_mask = binary_mask[:, :, 0]
+                elif binary_mask.shape[2] == 3:
+                    # RGB轉灰度
+                    binary_mask = cv2.cvtColor(binary_mask.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+                else:
+                    binary_mask = binary_mask[:, :, 0]
+            else:
+                # 更高維度，嘗試重塑
+                total_elements = binary_mask.size
+                h, w = image_array.shape[:2]
+                if total_elements == h * w:
+                    binary_mask = binary_mask.reshape(h, w)
+                else:
+                    raise HTTPException(status_code=400, detail=f"無法將 binary_mask 轉換為2D，形狀: {binary_mask.shape}")
+        
         if len(binary_mask.shape) != 2:
             raise HTTPException(status_code=400, detail=f"binary_mask 應該是 2D 數組，但得到形狀: {binary_mask.shape}")
         
-        # 確保 mask 與圖像尺寸一致
+        # 確保 mask 與圖像尺寸一致（在 resize 之前）
         if binary_mask.shape[:2] != image_array.shape[:2]:
             binary_mask = cv2.resize(binary_mask, (image_array.shape[1], image_array.shape[0]), interpolation=cv2.INTER_NEAREST)
         
@@ -273,27 +316,63 @@ async def segment_with_mask(
         if len(binary_mask.shape) != 2:
             raise HTTPException(status_code=400, detail=f"調整大小後 binary_mask 應該是 2D 數組，但得到形狀: {binary_mask.shape}")
         
-        # 設置圖像到 SAM predictor
-        predictor.set_image(image_array)
+        # SAM 要求將圖像 resize 到標準尺寸（最長邊 1024，保持寬高比）
+        # 同時將 mask 也 resize 到相同大小
+        original_height, original_width = image_array.shape[:2]
         
-        # 使用 mask 進行預測
-        # mask_input 應該是 [1, 1, H, W] 的格式，值為 0.0 或 1.0
-        # 確保 binary_mask 是 2D (H, W)
-        mask_input = (binary_mask > 127).astype(np.float32)
+        # 計算 resize 尺寸（最長邊為 1024）
+        max_size = 1024
+        scale = max_size / max(original_height, original_width)
+        new_height = int(original_height * scale)
+        new_width = int(original_width * scale)
         
-        # 檢查形狀
+        # Resize 圖像
+        resized_image = cv2.resize(image_array, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        print(f"調試: 原始圖像尺寸: ({original_height}, {original_width}), Resize 後: ({new_height}, {new_width})")
+        
+        # Resize mask 到相同尺寸（使用最近鄰插值保持二值特性）
+        resized_mask = cv2.resize(binary_mask, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+        print(f"調試: Resize 後 mask 尺寸: {resized_mask.shape}")
+        
+        # 設置 resize 後的圖像到 SAM predictor
+        predictor.set_image(resized_image)
+        
+        # SAM 的 mask_input 需要是低分辨率（256x256），而不是與圖像相同大小
+        # SAM 內部會自動將 mask_input 上採樣到圖像尺寸
+        # 使用 SAM 的 transform 來確保尺寸匹配
+        mask_input_size = 256
+        
+        # 將 mask resize 到 256x256（低分辨率），使用最近鄰插值保持二值特性
+        low_res_mask = cv2.resize(resized_mask, (mask_input_size, mask_input_size), interpolation=cv2.INTER_NEAREST)
+        
+        # 轉換為 float32，值為 0.0 或 1.0
+        mask_input = (low_res_mask > 127).astype(np.float32)
+        
+        # 確保是2D
         if len(mask_input.shape) != 2:
-            raise HTTPException(status_code=400, detail=f"mask_input 應該是 2D 數組，但得到形狀: {mask_input.shape}")
+            print(f"錯誤: mask_input 在轉換後不是2D，形狀: {mask_input.shape}")
+            if mask_input.size == mask_input_size * mask_input_size:
+                mask_input = mask_input.reshape(mask_input_size, mask_input_size)
+            else:
+                raise HTTPException(status_code=400, detail=f"mask_input 應該是 2D 數組，但得到形狀: {mask_input.shape}")
         
-        # 添加 batch 和 channel 維度：[H, W] -> [1, 1, H, W]
-        mask_input = mask_input[np.newaxis, np.newaxis, :, :]
+        # SAM 的 predict() 方法期望 mask_input 是 [1, H, W] 格式（3D）
+        # 添加 batch 維度：[H, W] -> [1, H, W]
+        mask_input = np.expand_dims(mask_input, axis=0)
         
-        # 最終檢查：確保是 4D 數組
-        if len(mask_input.shape) != 4:
-            raise HTTPException(status_code=400, detail=f"mask_input 應該是 4D 數組 [1, 1, H, W]，但得到形狀: {mask_input.shape}")
+        # 最終檢查：確保是 3D 數組 [1, H, W]，其中 H=W=256
+        if len(mask_input.shape) != 3:
+            raise HTTPException(status_code=400, detail=f"mask_input 應該是 3D 數組 [1, H, W]，但得到形狀: {mask_input.shape}")
         
-        # 計算 bounding box（從 mask）
-        coords = np.column_stack(np.where(binary_mask > 127))
+        # 驗證尺寸
+        if mask_input.shape[1] != mask_input_size or mask_input.shape[2] != mask_input_size:
+            raise HTTPException(status_code=400, detail=f"mask_input 應該是 [1, {mask_input_size}, {mask_input_size}]，但得到: {mask_input.shape}")
+        
+        # 打印最終形狀用於調試
+        print(f"調試: 最終 mask_input 形狀: {mask_input.shape}, 類型: {type(mask_input)}, dtype: {mask_input.dtype}")
+        
+        # 計算 bounding box（從 resize 後的 mask）
+        coords = np.column_stack(np.where(resized_mask > 127))
         if len(coords) == 0:
             raise HTTPException(status_code=400, detail="Invalid mask: no valid region found")
         
@@ -316,8 +395,15 @@ async def segment_with_mask(
         best_mask = masks[0]
         best_mask_binary = (best_mask > 0).astype(np.uint8) * 255
         
-        # 提取 mask 區域的邊界框
-        coords = np.column_stack(np.where(best_mask_binary > 0))
+        # 將 mask resize 回原始圖像尺寸
+        best_mask_original_size = cv2.resize(
+            best_mask_binary, 
+            (original_width, original_height), 
+            interpolation=cv2.INTER_NEAREST
+        )
+        
+        # 提取 mask 區域的邊界框（基於原始尺寸的 mask）
+        coords = np.column_stack(np.where(best_mask_original_size > 0))
         if len(coords) == 0:
             raise HTTPException(status_code=400, detail="No valid segmentation result")
         
@@ -332,8 +418,8 @@ async def segment_with_mask(
         # 裁切原圖的 RGB 區域
         rgb_crop = image_array[y_min:y_max+1, x_min:x_max+1].copy()
         
-        # 裁切 mask 區域
-        mask_crop = best_mask_binary[y_min:y_max+1, x_min:x_max+1]
+        # 裁切 mask 區域（基於原始尺寸）
+        mask_crop = best_mask_original_size[y_min:y_max+1, x_min:x_max+1]
         
         # 創建 alpha 通道：mask 為 True 的地方 alpha=255，False 的地方 alpha=0
         alpha_channel = mask_crop.astype(np.uint8)

@@ -17,7 +17,7 @@ import { useCanvasInteraction } from './hooks/useCanvasInteraction'
 import { useLayerInitialization } from './hooks/useLayerInitialization'
 
 function App() {
-  const stepNames = ['上傳圖片', '圈選物件', '物件去背', '圖層編輯', '生成動態']
+  const stepNames = ['上傳圖片', '圈選物件', '物件分割', '圖層編輯', '生成動態']
   const [currentStep, setCurrentStep] = useState(1)
   const [completedSteps, setCompletedSteps] = useState([]) // 追蹤已完成的步驟
   const [baseImage, setBaseImage] = useState(null)
@@ -188,17 +188,21 @@ function App() {
     }
   }
 
-  // 畫筆確認回調
+  // 畫筆確認回調 - 按下"開始分割圖層"按鈕時觸發圖層分割
   const handleConfirmBrush = async () => {
     setIsSegmenting(true)
     try {
       await handleConfirmBrushInternal((data) => {
+        // 設置分割結果
         setSegmentedMasks(data.masks || [])
+        // 標記 step 2（圈選物件）為完成
         setCompletedSteps([1, 2])
+        // 設置當前步驟為 2（useLayerInitialization 會自動進入 step 3）
         setCurrentStep(2)
       })
     } catch (error) {
       // 错误已在 handleConfirmBrushInternal 中处理
+      console.error('確認圈選時發生錯誤:', error)
     } finally {
       setIsSegmenting(false)
     }
@@ -272,6 +276,7 @@ function App() {
             onBrushSizeChange={setBrushSize}
             onConfirmBrush={handleConfirmBrush}
             hasBrushPath={(brushPath && brushPath.length > 0) || (currentPath && currentPath.length > 0) || (addPaths && addPaths.length > 0) || (polygonPoints && polygonPoints.length > 0) || (rectangleStart && rectangleEnd)}
+            isSegmenting={isSegmenting}
           />
             
           {/* 畫布區域 - 占滿剩餘空間（扣除進度條和左側面板） */}
