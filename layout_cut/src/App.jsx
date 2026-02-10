@@ -155,26 +155,45 @@ function App() {
   }
 
   // 處理圖層點擊（增強版，用於顯示動畫提示）
+  // 位置更新統一由 useEffect 處理，避免重複設置導致閃現
   const handleLayerClickWithPosition = (index, e) => {
-    // 調用原始的 handleLayerClick
+    // 只調用原始的 handleLayerClick，位置更新由 useEffect 統一處理
     handleLayerClick(index, e)
+  }
+
+  // 當選中圖層改變時，更新位置信息
+  // 統一由這個 useEffect 處理位置更新，避免重複設置
+  useEffect(() => {
+    // 如果沒有選中圖層，清除位置
+    if (selectedLayerIndex === null) {
+      setSelectedLayerPosition(null)
+      return
+    }
     
-    // 獲取圖層位置信息
-    if (selectedLayerRef.current && layers[index]) {
-      const layer = layers[index]
+    // 確保選中的圖層存在且 ref 已準備好
+    if (!layers[selectedLayerIndex] || !selectedLayerRef.current) {
+      return
+    }
+    
+    const layer = layers[selectedLayerIndex]
+    
+    // 使用 setTimeout 確保 DOM 已更新
+    const updatePosition = () => {
+      // 再次檢查，確保圖層和 ref 仍然有效
+      if (!layers[selectedLayerIndex] || !selectedLayerRef.current) {
+        return
+      }
       
-      // 獲取圖層在畫布上的位置（考慮縮放和旋轉）
-      const x = layer.x || 0
-      const y = layer.y || 0
-      const width = (layer.width || 0) * (layer.scaleX || 1)
-      const height = (layer.height || 0) * (layer.scaleY || 1)
+      const currentLayer = layers[selectedLayerIndex]
+      const x = currentLayer.x || 0
+      const y = currentLayer.y || 0
+      const width = (currentLayer.width || 0) * (currentLayer.scaleX || 1)
+      const height = (currentLayer.height || 0) * (currentLayer.scaleY || 1)
       
-      // 獲取畫布容器的位置（用於計算絕對位置）
       const canvasContainer = stageRef.current?.container()?.getBoundingClientRect()
       if (canvasContainer) {
-        // 計算圖層在頁面上的絕對位置
         const absoluteX = canvasContainer.left + x * canvasScale
-        const absoluteY = canvasContainer.top + y * canvasScale + 70 // 70px 是進度條高度
+        const absoluteY = canvasContainer.top + y * canvasScale + 70
         
         setSelectedLayerPosition({
           x: absoluteX,
@@ -183,56 +202,18 @@ function App() {
           height: height * canvasScale
         })
       } else {
-        // 如果無法獲取容器位置，使用相對位置
         setSelectedLayerPosition({
-          x: x * canvasScale + 320 + 20, // 320px 是左側面板寬度，20px 是間距
-          y: y * canvasScale + 70 + 20,  // 70px 是進度條高度，20px 是間距
+          x: x * canvasScale + 320 + 20,
+          y: y * canvasScale + 70 + 20,
           width: width * canvasScale,
           height: height * canvasScale
         })
       }
     }
-  }
-
-  // 當選中圖層改變時，更新位置信息
-  useEffect(() => {
-    if (selectedLayerIndex !== null && layers[selectedLayerIndex] && selectedLayerRef.current) {
-      const layer = layers[selectedLayerIndex]
-      
-      // 使用 setTimeout 確保 DOM 已更新
-      const updatePosition = () => {
-        const x = layer.x || 0
-        const y = layer.y || 0
-        const width = (layer.width || 0) * (layer.scaleX || 1)
-        const height = (layer.height || 0) * (layer.scaleY || 1)
-        
-        const canvasContainer = stageRef.current?.container()?.getBoundingClientRect()
-        if (canvasContainer) {
-          const absoluteX = canvasContainer.left + x * canvasScale
-          const absoluteY = canvasContainer.top + y * canvasScale + 70
-          
-          setSelectedLayerPosition({
-            x: absoluteX,
-            y: absoluteY,
-            width: width * canvasScale,
-            height: height * canvasScale
-          })
-        } else {
-          setSelectedLayerPosition({
-            x: x * canvasScale + 320 + 20,
-            y: y * canvasScale + 70 + 20,
-            width: width * canvasScale,
-            height: height * canvasScale
-          })
-        }
-      }
-      
-      // 延遲執行以確保 ref 已更新
-      const timer = setTimeout(updatePosition, 100)
-      return () => clearTimeout(timer)
-    } else if (selectedLayerIndex === null) {
-      setSelectedLayerPosition(null)
-    }
+    
+    // 延遲執行以確保 ref 已更新
+    const timer = setTimeout(updatePosition, 100)
+    return () => clearTimeout(timer)
   }, [selectedLayerIndex, layers, canvasScale])
 
   const handleSegmentImage = async () => {
@@ -283,8 +264,9 @@ function App() {
       await handleConfirmBrushInternal((data) => {
         // 設置分割結果
         setSegmentedMasks(data.masks || [])
-        // 標記 step 2（圈選物件）和 step 3（物件分割）為完成
-        setCompletedSteps([1, 2, 3])
+        // 標記 step 2（圈選物件）為完成
+        // step 3（物件分割）的完成狀態將由 useLayerInitialization 在圖層初始化時設置
+        setCompletedSteps([1, 2])
         // 設置當前步驟為 2（useLayerInitialization 會自動進入 step 3）
         setCurrentStep(2)
       })
@@ -443,9 +425,6 @@ function App() {
                 onGenerate={(data) => {
                   console.log('生成動態影片:', data)
                   // 目前按鈕還沒功能，先做 UI
-                }}
-                onClose={() => {
-                  setSelectedLayerPosition(null)
                 }}
               />
             )}

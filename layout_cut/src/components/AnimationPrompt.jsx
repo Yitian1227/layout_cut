@@ -9,8 +9,7 @@ function AnimationPrompt({
   selectedLayer,
   layerPosition, // { x, y, width, height } - 圖層在畫布上的位置
   canvasScale,
-  onGenerate,
-  onClose
+  onGenerate
 }) {
   const [prompt, setPrompt] = useState('')
   const inputRef = useRef(null)
@@ -82,32 +81,15 @@ function AnimationPrompt({
   }
 
   return (
-    <div style={inputBoxStyle}>
-      {/* 標題和關閉按鈕 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div 
+      style={inputBoxStyle}
+      onClick={(e) => e.stopPropagation()} // 阻止點擊事件冒泡到畫布
+    >
+      {/* 標題 */}
+      <div>
         <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#333' }}>
           生成動態影片
         </h3>
-        {onClose && (
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: 'none',
-              fontSize: '20px',
-              cursor: 'pointer',
-              color: '#999',
-              padding: '0',
-              width: '24px',
-              height: '24px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}
-          >
-            ×
-          </button>
-        )}
       </div>
 
       {/* 圖層信息 */}

@@ -123,13 +123,13 @@ function LeftSidebar({
         />
       )}
       
-      {/* 開始分割圖層按鈕 - 取代原本的"確認圈選"按鈕 */}
-      {baseImage && (
+      {/* 開始分割圖層按鈕 - 只在沒有圖層時顯示 */}
+      {baseImage && layers.length === 0 && (
         <div style={{ padding: '15px', flexShrink: 0 }}>
           <SegmentButton
             baseImage={baseImage}
             isSegmenting={isSegmenting}
-            hasSegmentedMasks={segmentedMasks && segmentedMasks.length > 0}
+            hasSegmentedMasks={false}
             onSegment={onConfirmBrush}
           />
         </div>
