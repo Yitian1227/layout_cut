@@ -8,6 +8,7 @@ import SegmentButton from './components/SegmentButton'
 import SegmentedPreview from './components/SegmentedPreview'
 import KonvaCanvas from './components/Canvas/KonvaCanvas'
 import LeftSidebar from './components/LeftSidebar'
+import AnimationPrompt from './components/AnimationPrompt'
 import { useBrushTool } from './components/BrushTool'
 
 // 導入自定義 hooks
@@ -24,6 +25,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState(null)
   const [isSegmenting, setIsSegmenting] = useState(false)
   const [segmentedMasks, setSegmentedMasks] = useState([])
+  const [selectedLayerPosition, setSelectedLayerPosition] = useState(null) // 選中圖層的位置信息
   const fileInputRef = useRef(null)
   const stageRef = useRef(null) // Stage 引用
   
@@ -148,7 +150,90 @@ function App() {
   // 點擊畫布空白處取消選擇
   const handleStageClick = (e) => {
     handleStageClickInternal(e, handleDeselect)
+    // 點擊空白處時隱藏動畫提示
+    setSelectedLayerPosition(null)
   }
+
+  // 處理圖層點擊（增強版，用於顯示動畫提示）
+  const handleLayerClickWithPosition = (index, e) => {
+    // 調用原始的 handleLayerClick
+    handleLayerClick(index, e)
+    
+    // 獲取圖層位置信息
+    if (selectedLayerRef.current && layers[index]) {
+      const layer = layers[index]
+      
+      // 獲取圖層在畫布上的位置（考慮縮放和旋轉）
+      const x = layer.x || 0
+      const y = layer.y || 0
+      const width = (layer.width || 0) * (layer.scaleX || 1)
+      const height = (layer.height || 0) * (layer.scaleY || 1)
+      
+      // 獲取畫布容器的位置（用於計算絕對位置）
+      const canvasContainer = stageRef.current?.container()?.getBoundingClientRect()
+      if (canvasContainer) {
+        // 計算圖層在頁面上的絕對位置
+        const absoluteX = canvasContainer.left + x * canvasScale
+        const absoluteY = canvasContainer.top + y * canvasScale + 70 // 70px 是進度條高度
+        
+        setSelectedLayerPosition({
+          x: absoluteX,
+          y: absoluteY,
+          width: width * canvasScale,
+          height: height * canvasScale
+        })
+      } else {
+        // 如果無法獲取容器位置，使用相對位置
+        setSelectedLayerPosition({
+          x: x * canvasScale + 320 + 20, // 320px 是左側面板寬度，20px 是間距
+          y: y * canvasScale + 70 + 20,  // 70px 是進度條高度，20px 是間距
+          width: width * canvasScale,
+          height: height * canvasScale
+        })
+      }
+    }
+  }
+
+  // 當選中圖層改變時，更新位置信息
+  useEffect(() => {
+    if (selectedLayerIndex !== null && layers[selectedLayerIndex] && selectedLayerRef.current) {
+      const layer = layers[selectedLayerIndex]
+      
+      // 使用 setTimeout 確保 DOM 已更新
+      const updatePosition = () => {
+        const x = layer.x || 0
+        const y = layer.y || 0
+        const width = (layer.width || 0) * (layer.scaleX || 1)
+        const height = (layer.height || 0) * (layer.scaleY || 1)
+        
+        const canvasContainer = stageRef.current?.container()?.getBoundingClientRect()
+        if (canvasContainer) {
+          const absoluteX = canvasContainer.left + x * canvasScale
+          const absoluteY = canvasContainer.top + y * canvasScale + 70
+          
+          setSelectedLayerPosition({
+            x: absoluteX,
+            y: absoluteY,
+            width: width * canvasScale,
+            height: height * canvasScale
+          })
+        } else {
+          setSelectedLayerPosition({
+            x: x * canvasScale + 320 + 20,
+            y: y * canvasScale + 70 + 20,
+            width: width * canvasScale,
+            height: height * canvasScale
+          })
+        }
+      }
+      
+      // 延遲執行以確保 ref 已更新
+      const timer = setTimeout(updatePosition, 100)
+      return () => clearTimeout(timer)
+    } else if (selectedLayerIndex === null) {
+      setSelectedLayerPosition(null)
+    }
+  }, [selectedLayerIndex, layers, canvasScale])
 
   const handleSegmentImage = async () => {
     if (!selectedFile) {
@@ -314,7 +399,7 @@ function App() {
               selectedLayerIndex={selectedLayerIndex}
               selectedLayers={selectedLayers}
               canvasScale={canvasScale}
-              onLayerClick={handleLayerClick}
+              onLayerClick={handleLayerClickWithPosition}
               onLayerPointerDown={handleLayerPointerDown}
               onStageClick={handleStageClick}
               onStagePointerMove={handleStagePointerMove}
@@ -347,6 +432,23 @@ function App() {
               onRectangleUpdate={handleRectangleUpdate}
               onRectangleEnd={handleRectangleEnd}
             />
+            
+            {/* 動畫生成提示輸入 - 顯示在選中圖層右側 */}
+            {selectedLayerIndex !== null && layers[selectedLayerIndex] && (
+              <AnimationPrompt
+                selectedLayerIndex={selectedLayerIndex}
+                selectedLayer={layers[selectedLayerIndex]}
+                layerPosition={selectedLayerPosition}
+                canvasScale={canvasScale}
+                onGenerate={(data) => {
+                  console.log('生成動態影片:', data)
+                  // 目前按鈕還沒功能，先做 UI
+                }}
+                onClose={() => {
+                  setSelectedLayerPosition(null)
+                }}
+              />
+            )}
           </div>
         </div>
       )}
