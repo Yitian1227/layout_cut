@@ -48,5 +48,7 @@ export function useLayerInitialization(
       // 初始化圖層列表項引用數組
       layerManagement.layerItemRefs.current = new Array(initialLayers.length).fill(null).map(() => ({ current: null }))
     }
-  }, [segmentedMasks, currentStep, isSegmenting, imageSize, layerManagement, setCurrentStep, setCompletedSteps])
+    // 移除 setCompletedSteps 從依賴項，因為它是穩定的 setState 函數，不應該觸發重新執行
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segmentedMasks, currentStep, isSegmenting, imageSize, layerManagement, setCurrentStep])
 }
