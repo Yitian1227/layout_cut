@@ -1,0 +1,41 @@
+import { useEffect } from 'react'
+
+/**
+ * 从分割结果初始化图层的 hook
+ */
+export function useLayerInitialization(
+  segmentedMasks,
+  currentStep,
+  isSegmenting,
+  imageSize,
+  layerManagement,
+  setCurrentStep
+) {
+  useEffect(() => {
+    if (segmentedMasks.length > 0 && currentStep === 2 && !isSegmenting) {
+      // 初始化圖層列表
+      // segmentedMasks 現在是包含 { image, offsetX, offsetY, width, height } 的對象數組
+      const initialLayers = segmentedMasks.map((maskData, index) => ({
+        id: index,
+        src: maskData.image || maskData, // 兼容舊格式（如果還是字符串）
+        visible: true,
+        x: maskData.offsetX || 0, // 使用偏移量作為初始位置
+        y: maskData.offsetY || 0,
+        width: maskData.width || imageSize.width, // 記錄裁切後的寬度
+        height: maskData.height || imageSize.height, // 記錄裁切後的高度
+        scaleX: 1, // 圖層縮放 X
+        scaleY: 1, // 圖層縮放 Y
+        rotation: 0 // 圖層旋轉角度
+      }))
+      
+      // 移除居中調整，直接使用原始位置
+      layerManagement.setLayers(initialLayers)
+      layerManagement.setSelectedLayerIndex(null)
+      layerManagement.setSelectedLayers([])
+      layerManagement.setHoveredLayerIndex(null)
+      setCurrentStep(3)
+      // 初始化圖層列表項引用數組
+      layerManagement.layerItemRefs.current = new Array(initialLayers.length).fill(null).map(() => ({ current: null }))
+    }
+  }, [segmentedMasks, currentStep, isSegmenting, imageSize, layerManagement, setCurrentStep])
+}

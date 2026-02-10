@@ -1,6 +1,8 @@
 import React from 'react'
 import ControlPanel from './ControlPanel'
 import LayerList from './LayerList/LayerList'
+import InstructionText from './InstructionText'
+import BrushTool from './BrushTool'
 import '../App.css'
 
 function LeftSidebar({
@@ -18,7 +20,18 @@ function LeftSidebar({
   onScaleLayer,
   onRotateLayer,
   onToggleLayerVisible,
-  onDeleteLayer
+  onDeleteLayer,
+  currentStep,
+  segmentedMasks,
+  isBrushMode,
+  toolType,
+  onSetToolType,
+  brushMode,
+  onSetBrushMode,
+  brushSize,
+  onBrushSizeChange,
+  onConfirmBrush,
+  hasBrushPath
 }) {
   return (
     <div 
@@ -85,6 +98,26 @@ function LeftSidebar({
           onDeleteLayer={onDeleteLayer}
         />
       </div>
+
+      {/* 說明文字 - 置於控制面板下方，圖層列表上方 */}
+      <InstructionText
+        currentStep={currentStep}
+        baseImage={baseImage}
+        segmentedMasks={segmentedMasks}
+      />
+
+      {/* 畫筆工具 - 置於說明文字下方，圖層列表上方 */}
+      <BrushTool
+        isBrushMode={isBrushMode}
+        toolType={toolType}
+        onSetToolType={onSetToolType}
+        brushMode={brushMode}
+        onSetBrushMode={onSetBrushMode}
+        brushSize={brushSize}
+        onBrushSizeChange={onBrushSizeChange}
+        onConfirmBrush={onConfirmBrush}
+        hasBrushPath={hasBrushPath}
+      />
       
       {/* 圖層列表 */}
       <div style={{ padding: '15px', flex: 1, minHeight: 0 }}>

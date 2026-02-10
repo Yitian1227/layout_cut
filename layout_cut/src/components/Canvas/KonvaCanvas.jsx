@@ -1,5 +1,5 @@
-import React from 'react'
-import { Stage, Layer, Transformer } from 'react-konva'
+import React, { useRef, useEffect } from 'react'
+import { Stage, Layer, Transformer, Line, Shape, Rect, Circle } from 'react-konva'
 import LayerImage from './LayerImage'
 import BackgroundImage from './BackgroundImage'
 
@@ -20,8 +20,350 @@ function KonvaCanvas({
   onTransformEnd,
   transformerRef,
   selectedLayerRef,
-  stageRef
+  stageRef,
+  isBrushMode,
+  toolType,
+  brushMode,
+  brushPath,
+  addPaths,
+  subtractPaths,
+  currentPath,
+  brushSize,
+  polygonPoints,
+  isPolygonClosed,
+  rectangleStart,
+  rectangleEnd,
+  isDrawingRectangle,
+  hoverPointRef,
+  onBrushPathUpdate,
+  onPathComplete,
+  onRemovePath,
+  onPolygonPointAdd,
+  onRectangleStart,
+  onRectangleUpdate,
+  onRectangleEnd
 }) {
+  const brushLayerRef = useRef(null)
+  const isDrawingRef = useRef(false)
+  
+  // 检查点是否在路径内（使用射线法）
+  const isPointInPath = (point, path) => {
+    if (!path || path.length < 3) return false
+    
+    let inside = false
+    for (let i = 0, j = path.length - 1; i < path.length; j = i++) {
+      const xi = path[i].x, yi = path[i].y
+      const xj = path[j].x, yj = path[j].y
+      
+      const intersect = ((yi > point.y) !== (yj > point.y)) &&
+        (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi)
+      if (intersect) inside = !inside
+    }
+    return inside
+  }
+  
+  // 检查点是否在路径附近（用于检测框线）
+  const isPointNearPath = (point, path, threshold = 5) => {
+    if (!path || path.length < 2) return false
+    
+    for (let i = 0; i < path.length - 1; i++) {
+      const p1 = path[i]
+      const p2 = path[i + 1]
+      
+      // 计算点到线段的距离
+      const A = point.x - p1.x
+      const B = point.y - p1.y
+      const C = p2.x - p1.x
+      const D = p2.y - p1.y
+      
+      const dot = A * C + B * D
+      const lenSq = C * C + D * D
+      let param = -1
+      if (lenSq !== 0) param = dot / lenSq
+      
+      let xx, yy
+      if (param < 0) {
+        xx = p1.x
+        yy = p1.y
+      } else if (param > 1) {
+        xx = p2.x
+        yy = p2.y
+      } else {
+        xx = p1.x + param * C
+        yy = p1.y + param * D
+      }
+      
+      const dx = point.x - xx
+      const dy = point.y - yy
+      const distance = Math.sqrt(dx * dx + dy * dy)
+      
+      if (distance <= threshold) return true
+    }
+    return false
+  }
+
+  // 获取鼠标样式（黑色画笔图标，hotspot 设置在笔尖位置）
+  const getBrushCursor = () => {
+    const brushPath = 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z'
+    const hotspotX = 5
+    const hotspotY = 21
+    
+    const baseBrushSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+      <path d="${brushPath}" fill="#000000"/>
+    </svg>`
+    
+    if (brushMode === 'add') {
+      const addSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+        <path d="${brushPath}" fill="#000000"/>
+        <circle cx="18" cy="6" r="5" fill="#28a745" stroke="#fff" stroke-width="1"/>
+        <text x="18" y="9" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">+</text>
+      </svg>`
+      return `url("data:image/svg+xml;utf8,${encodeURIComponent(addSvg)}") ${hotspotX} ${hotspotY}, auto`
+    } else if (brushMode === 'subtract') {
+      const subtractSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+        <path d="${brushPath}" fill="#000000"/>
+        <circle cx="18" cy="6" r="5" fill="#dc3545" stroke="#fff" stroke-width="1"/>
+        <text x="18" y="9" font-size="10" fill="#fff" text-anchor="middle" font-weight="bold">-</text>
+      </svg>`
+      return `url("data:image/svg+xml;utf8,${encodeURIComponent(subtractSvg)}") ${hotspotX} ${hotspotY}, auto`
+    } else {
+      return `url("data:image/svg+xml;utf8,${encodeURIComponent(baseBrushSvg)}") ${hotspotX} ${hotspotY}, auto`
+    }
+  }
+
+  // 画笔模式下的鼠标事件处理
+  const handleBrushPointerDown = (e) => {
+    if (!isBrushMode) return
+    
+    const stage = e.target.getStage()
+    
+    // 检查点击是否在画布内
+    const pointerPos = stage.getPointerPosition()
+    if (!pointerPos) return
+    
+    const scale = stage.scaleX()
+    const x = pointerPos.x / scale
+    const y = pointerPos.y / scale
+    
+    // 检查坐标是否在画布范围内
+    if (x < 0 || x > 1000 || y < 0 || y > 800) return
+    
+    const clickPoint = { x, y }
+    
+    // Polygon工具：添加点
+    if (toolType === 'polygon') {
+      // 减选模式下检查是否点击到已有路径
+      if (brushMode === 'subtract') {
+        if (brushPath && brushPath.length > 0) {
+          if (isPointInPath(clickPoint, brushPath) || isPointNearPath(clickPoint, brushPath, 10)) {
+            if (onRemovePath) {
+              onRemovePath('main')
+            }
+            return
+          }
+        }
+        if (addPaths && addPaths.length > 0) {
+          for (let i = addPaths.length - 1; i >= 0; i--) {
+            const path = addPaths[i]
+            if (path && path.length > 0) {
+              if (isPointInPath(clickPoint, path) || isPointNearPath(clickPoint, path, 10)) {
+                if (onRemovePath) {
+                  onRemovePath('add', i)
+                }
+                return
+              }
+            }
+          }
+        }
+      }
+      if (onPolygonPointAdd) {
+        onPolygonPointAdd(clickPoint)
+      }
+      return
+    }
+    
+    // Rectangle工具：开始绘制矩形
+    if (toolType === 'rectangle') {
+      // 减选模式下检查是否点击到已有路径
+      if (brushMode === 'subtract') {
+        if (brushPath && brushPath.length > 0) {
+          if (isPointInPath(clickPoint, brushPath) || isPointNearPath(clickPoint, brushPath, 10)) {
+            if (onRemovePath) {
+              onRemovePath('main')
+            }
+            return
+          }
+        }
+        if (addPaths && addPaths.length > 0) {
+          for (let i = addPaths.length - 1; i >= 0; i--) {
+            const path = addPaths[i]
+            if (path && path.length > 0) {
+              if (isPointInPath(clickPoint, path) || isPointNearPath(clickPoint, path, 10)) {
+                if (onRemovePath) {
+                  onRemovePath('add', i)
+                }
+                return
+              }
+            }
+          }
+        }
+      }
+      if (onRectangleStart) {
+        onRectangleStart(clickPoint)
+      }
+      return
+    }
+    
+    // Brush工具 - 减选模式：检查是否点击到已有路径
+    if (toolType === 'brush' && brushMode === 'subtract') {
+      if (brushPath && brushPath.length > 0) {
+        if (isPointInPath(clickPoint, brushPath) || isPointNearPath(clickPoint, brushPath, brushSize / 2)) {
+          if (onRemovePath) {
+            onRemovePath('main')
+          }
+          return
+        }
+      }
+      
+      if (addPaths && addPaths.length > 0) {
+        for (let i = addPaths.length - 1; i >= 0; i--) {
+          const path = addPaths[i]
+          if (path && path.length > 0) {
+            if (isPointInPath(clickPoint, path) || isPointNearPath(clickPoint, path, brushSize / 2)) {
+              if (onRemovePath) {
+                onRemovePath('add', i)
+              }
+              return
+            }
+          }
+        }
+      }
+      
+      // 减选模式：开始绘制擦除路径
+      if (onPathComplete && currentPath && currentPath.length > 0) {
+        onPathComplete()
+      }
+      isDrawingRef.current = true
+      onBrushPathUpdate([clickPoint])
+      stage.container().style.cursor = getBrushCursor()
+      return
+    }
+    
+    // Brush工具 - 正常模式和加选模式：开始绘制
+    if (toolType === 'brush') {
+      if (onPathComplete && currentPath && currentPath.length > 0) {
+        onPathComplete()
+      }
+      isDrawingRef.current = true
+      onBrushPathUpdate([clickPoint])
+      stage.container().style.cursor = getBrushCursor()
+    }
+  }
+
+  const handleBrushPointerMove = (e) => {
+    const stage = e.target.getStage()
+    const point = stage.getPointerPosition()
+    const scale = stage.scaleX()
+    const x = point.x / scale
+    const y = point.y / scale
+    const movePoint = { x, y }
+    
+    // Polygon工具：更新悬停点（仅在未完成且有至少一个点时）
+    if (toolType === 'polygon') {
+      if (hoverPointRef && polygonPoints && polygonPoints.length > 0 && !isPolygonClosed) {
+        // 检查坐标是否在画布范围内
+        if (movePoint.x >= 0 && movePoint.x <= 1000 && movePoint.y >= 0 && movePoint.y <= 800) {
+          hoverPointRef.current = movePoint
+          // 强制重绘以显示连线
+          if (stageRef.current) {
+            stageRef.current.batchDraw()
+          }
+        } else {
+          hoverPointRef.current = null
+          if (stageRef.current) {
+            stageRef.current.batchDraw()
+          }
+        }
+      }
+      return
+    }
+    
+    // Rectangle工具：更新矩形结束点
+    if (toolType === 'rectangle' && isDrawingRectangle) {
+      if (onRectangleUpdate) {
+        onRectangleUpdate(movePoint)
+      }
+      return
+    }
+    
+    // Brush工具
+    if (toolType === 'brush') {
+      if (!isDrawingRef.current) {
+        if (onStagePointerMove) {
+          onStagePointerMove(e)
+        }
+        if (isBrushMode && stageRef.current) {
+          stageRef.current.container().style.cursor = getBrushCursor()
+        }
+        return
+      }
+      
+      if (currentPath && currentPath.length > 0) {
+        const newPath = [...currentPath, movePoint]
+        onBrushPathUpdate(newPath)
+        
+        if (brushLayerRef.current) {
+          brushLayerRef.current.batchDraw()
+        }
+      }
+    }
+  }
+
+  const handleBrushPointerUp = (e) => {
+    if (!isBrushMode) {
+      if (onStagePointerUp) {
+        onStagePointerUp(e)
+      }
+      return
+    }
+    
+    // Rectangle工具：结束绘制矩形
+    if (toolType === 'rectangle' && isDrawingRectangle) {
+      const stage = e.target.getStage()
+      const point = stage.getPointerPosition()
+      const scale = stage.scaleX()
+      const x = point.x / scale
+      const y = point.y / scale
+      if (onRectangleEnd) {
+        onRectangleEnd({ x, y })
+      }
+      return
+    }
+    
+    // Brush工具
+    if (toolType === 'brush' && isDrawingRef.current) {
+      isDrawingRef.current = false
+      
+      if (onPathComplete && currentPath && currentPath.length > 0) {
+        onPathComplete()
+      }
+    }
+  }
+
+  // 当画笔模式改变时，更新鼠标样式
+  useEffect(() => {
+    if (!isBrushMode) {
+      isDrawingRef.current = false
+      if (stageRef.current) {
+        stageRef.current.container().style.cursor = 'default'
+      }
+    } else {
+      if (stageRef.current) {
+        stageRef.current.container().style.cursor = getBrushCursor()
+      }
+    }
+  }, [isBrushMode, brushMode, stageRef])
+
   return (
     <div style={{ 
       backgroundColor: '#f9f9f9',
@@ -37,12 +379,13 @@ function KonvaCanvas({
         style={{ border: '1px solid #ddd', borderRadius: '4px' }}
         scaleX={canvasScale}
         scaleY={canvasScale}
-        onPointerMove={onStagePointerMove}
-        onPointerUp={onStagePointerUp}
-        onClick={onStageClick}
+        onPointerMove={isBrushMode ? handleBrushPointerMove : onStagePointerMove}
+        onPointerUp={isBrushMode ? handleBrushPointerUp : onStagePointerUp}
+        onPointerDown={isBrushMode ? handleBrushPointerDown : undefined}
+        onClick={isBrushMode ? undefined : onStageClick}
       >
         <Layer>
-          {/* 背景圖片（原始圖片預覽） */}
+          {/* 1. 背景圖片（最底层） */}
           {baseImage && (
             <BackgroundImage
               src={baseImage}
@@ -51,8 +394,7 @@ function KonvaCanvas({
             />
           )}
           
-          {/* 分割圖層 */}
-          {/* Konva 的 z-index 順序：後渲染的圖層在上層，所以如果多個圖層重疊，最後渲染的（index 最大的）會優先觸發事件 */}
+          {/* 2. 分割圖層 */}
           {layers.map((layer, index) => {
             const isSelected = selectedLayerIndex === index || selectedLayers.includes(index)
             
@@ -72,13 +414,226 @@ function KonvaCanvas({
             )
           })}
           
+          {/* 3. 已完成的圈選路徑（brushPath、addPaths）- 旧的圈选范围 */}
+          {isBrushMode && (
+            <>
+              {/* 主路徑（紅色線條 + 半透明紅色填充） */}
+              {brushPath && brushPath.length > 0 && (
+                <>
+                  <Line
+                    points={brushPath.flatMap(p => [p.x, p.y])}
+                    stroke="#ff0000"
+                    strokeWidth={brushSize / canvasScale}
+                    tension={0.5}
+                    lineCap="round"
+                    lineJoin="round"
+                    closed={true}
+                    listening={false}
+                  />
+                  <Shape
+                    sceneFunc={(ctx) => {
+                      ctx.beginPath()
+                      ctx.moveTo(brushPath[0].x, brushPath[0].y)
+                      for (let i = 1; i < brushPath.length; i++) {
+                        ctx.lineTo(brushPath[i].x, brushPath[i].y)
+                      }
+                      ctx.closePath()
+                      ctx.fillStyle = 'rgba(255, 0, 0, 0.3)'
+                      ctx.fill()
+                    }}
+                    listening={false}
+                  />
+                </>
+              )}
+              
+              {/* 加選路徑（紅色線條 + 半透明紅色填充） */}
+              {addPaths && addPaths.map((path, index) => (
+                path.length > 0 && (
+                  <React.Fragment key={`add-${index}`}>
+                    <Line
+                      points={path.flatMap(p => [p.x, p.y])}
+                      stroke="#ff0000"
+                      strokeWidth={brushSize / canvasScale}
+                      tension={0.5}
+                      lineCap="round"
+                      lineJoin="round"
+                      closed={true}
+                      listening={false}
+                    />
+                    <Shape
+                      sceneFunc={(ctx) => {
+                        ctx.beginPath()
+                        ctx.moveTo(path[0].x, path[0].y)
+                        for (let i = 1; i < path.length; i++) {
+                          ctx.lineTo(path[i].x, path[i].y)
+                        }
+                        ctx.closePath()
+                        ctx.fillStyle = 'rgba(255, 0, 0, 0.3)'
+                        ctx.fill()
+                      }}
+                      listening={false}
+                    />
+                  </React.Fragment>
+                )
+              ))}
+            </>
+          )}
+          
+          {/* 4. 當前正在繪製的路徑（currentPath、polygonPoints、rectangleStart/End）- 必须最后渲染，确保显示在最上层 */}
+          {isBrushMode && (
+            <>
+              {/* Brush工具：當前正在繪製的路徑 */}
+              {toolType === 'brush' && currentPath && currentPath.length > 0 && (
+                <Line
+                  ref={brushLayerRef}
+                  points={currentPath.flatMap(p => [p.x, p.y])}
+                  stroke={brushMode === 'subtract' ? '#007bff' : '#ff0000'}
+                  strokeWidth={brushSize / canvasScale}
+                  tension={0.5}
+                  lineCap="round"
+                  lineJoin="round"
+                  closed={false}
+                  listening={false}
+                />
+              )}
+              
+              {/* Polygon工具：繪製點和連線 */}
+              {toolType === 'polygon' && polygonPoints && polygonPoints.length > 0 && (
+                <>
+                  {/* 如果已完成封闭，只绘制封闭的多边形边界 */}
+                  {isPolygonClosed ? (
+                    <>
+                      <Line
+                        points={[...polygonPoints, polygonPoints[0]].flatMap(p => [p.x, p.y])}
+                        stroke="#ff0000"
+                        strokeWidth={2 / canvasScale}
+                        closed={true}
+                        listening={false}
+                      />
+                      {polygonPoints.map((point, index) => (
+                        <Circle
+                          key={`polygon-point-${index}`}
+                          x={point.x}
+                          y={point.y}
+                          radius={4 / canvasScale}
+                          fill="#ff0000"
+                          stroke="#fff"
+                          strokeWidth={1 / canvasScale}
+                          listening={false}
+                        />
+                      ))}
+                      <Shape
+                        sceneFunc={(ctx) => {
+                          ctx.beginPath()
+                          ctx.moveTo(polygonPoints[0].x, polygonPoints[0].y)
+                          for (let i = 1; i < polygonPoints.length; i++) {
+                            ctx.lineTo(polygonPoints[i].x, polygonPoints[i].y)
+                          }
+                          ctx.closePath()
+                          ctx.fillStyle = 'rgba(255, 0, 0, 0.3)'
+                          ctx.fill()
+                        }}
+                        listening={false}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      {/* 未完成時：繪製點和連線 */}
+                      {polygonPoints.map((point, index) => (
+                        <Circle
+                          key={`polygon-point-${index}`}
+                          x={point.x}
+                          y={point.y}
+                          radius={4 / canvasScale}
+                          fill="#ff0000"
+                          stroke="#fff"
+                          strokeWidth={1 / canvasScale}
+                          listening={false}
+                        />
+                      ))}
+                      
+                      {/* 繪製點之間的連線（已完成的部分） */}
+                      {polygonPoints.length > 1 && (
+                        <Line
+                          points={polygonPoints.flatMap(p => [p.x, p.y])}
+                          stroke="#ff0000"
+                          strokeWidth={2 / canvasScale}
+                          listening={false}
+                        />
+                      )}
+                      
+                      {/* 繪製從最後一個點到滑鼠位置的動態連線 */}
+                      {hoverPointRef && hoverPointRef.current && (
+                        <>
+                          <Line
+                            points={[
+                              polygonPoints[polygonPoints.length - 1].x,
+                              polygonPoints[polygonPoints.length - 1].y,
+                              hoverPointRef.current.x,
+                              hoverPointRef.current.y
+                            ]}
+                            stroke="#ff0000"
+                            strokeWidth={2 / canvasScale}
+                            dash={[5, 5]}
+                            listening={false}
+                          />
+                          {/* 檢查是否回到原點附近（自動封閉提示） */}
+                          {polygonPoints.length >= 3 && (
+                            (() => {
+                              const firstPoint = polygonPoints[0]
+                              const hoverPoint = hoverPointRef.current
+                              const distance = Math.sqrt(
+                                Math.pow(hoverPoint.x - firstPoint.x, 2) +
+                                Math.pow(hoverPoint.y - firstPoint.y, 2)
+                              )
+                              if (distance < 15 / canvasScale) {
+                                return (
+                                  <Line
+                                    points={[
+                                      polygonPoints[polygonPoints.length - 1].x,
+                                      polygonPoints[polygonPoints.length - 1].y,
+                                      firstPoint.x,
+                                      firstPoint.y
+                                    ]}
+                                    stroke="#ff0000"
+                                    strokeWidth={2 / canvasScale}
+                                    listening={false}
+                                  />
+                                )
+                              }
+                              return null
+                            })()
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+              
+              {/* Rectangle工具：繪製矩形（包括已完成但未确认的） */}
+              {toolType === 'rectangle' && rectangleStart && rectangleEnd && (
+                <>
+                  <Rect
+                    x={Math.min(rectangleStart.x, rectangleEnd.x)}
+                    y={Math.min(rectangleStart.y, rectangleEnd.y)}
+                    width={Math.abs(rectangleEnd.x - rectangleStart.x)}
+                    height={Math.abs(rectangleEnd.y - rectangleStart.y)}
+                    stroke="#ff0000"
+                    strokeWidth={2 / canvasScale}
+                    fill="rgba(255, 0, 0, 0.3)"
+                    listening={false}
+                  />
+                </>
+              )}
+            </>
+          )}
+          
           {/* Transformer - 變換控制手柄 */}
-          {/* 只在選中單個圖層時顯示 Transformer */}
           {selectedLayerIndex !== null && selectedLayers.length === 1 && (
             <Transformer
               ref={transformerRef}
               boundBoxFunc={(oldBox, newBox) => {
-                // 限制最小尺寸
                 if (Math.abs(newBox.width) < 5 || Math.abs(newBox.height) < 5) {
                   return oldBox
                 }
@@ -86,8 +641,8 @@ function KonvaCanvas({
               }}
               rotateEnabled={true}
               enabledAnchors={[
-                'top-left', 'top-right', 'bottom-left', 'bottom-right', // 四個角的旋轉手柄
-                'middle-left', 'middle-right', 'top-center', 'bottom-center' // 邊緣的縮放手柄
+                'top-left', 'top-right', 'bottom-left', 'bottom-right',
+                'middle-left', 'middle-right', 'top-center', 'bottom-center'
               ]}
               borderEnabled={true}
               borderStroke="#4a90e2"
@@ -99,71 +654,6 @@ function KonvaCanvas({
               anchorCornerRadius={6}
               keepRatio={false}
               flipEnabled={false}
-              // 自定義手柄樣式
-              anchorShapeFunc={(ctx, anchor) => {
-                const size = anchor.size()
-                const x = anchor.x()
-                const y = anchor.y()
-                
-                ctx.beginPath()
-                
-                // 判斷是旋轉手柄（四個角）還是縮放手柄（邊緣）
-                const isRotateAnchor = ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(anchor.name())
-                
-                if (isRotateAnchor) {
-                  // 繪製旋轉手柄（圓形，暗示可以旋轉）
-                  ctx.arc(x, y, size / 2, 0, Math.PI * 2)
-                  ctx.fillStyle = '#4a90e2'
-                  ctx.fill()
-                  ctx.strokeStyle = '#fff'
-                  ctx.lineWidth = 2
-                  ctx.stroke()
-                  
-                  // 繪製彎曲箭頭
-                  ctx.beginPath()
-                  ctx.arc(x, y, size / 2 - 3, 0, Math.PI * 1.5)
-                  ctx.strokeStyle = '#fff'
-                  ctx.lineWidth = 2
-                  ctx.stroke()
-                  
-                  // 箭頭頭部
-                  ctx.beginPath()
-                  ctx.moveTo(x - size / 4, y - size / 2)
-                  ctx.lineTo(x, y - size / 2 - 3)
-                  ctx.lineTo(x + size / 4, y - size / 2)
-                  ctx.fillStyle = '#fff'
-                  ctx.fill()
-                } else {
-                  // 繪製縮放手柄（方形，帶箭頭）
-                  const halfSize = size / 2
-                  ctx.fillStyle = '#4a90e2'
-                  ctx.fillRect(x - halfSize, y - halfSize, size, size)
-                  ctx.strokeStyle = '#fff'
-                  ctx.lineWidth = 2
-                  ctx.strokeRect(x - halfSize, y - halfSize, size, size)
-                  
-                  // 根據位置繪製箭頭方向
-                  if (anchor.name() === 'top-center' || anchor.name() === 'middle-left') {
-                    // 朝內箭頭
-                    ctx.beginPath()
-                    ctx.moveTo(x, y - halfSize + 2)
-                    ctx.lineTo(x - 3, y - halfSize + 6)
-                    ctx.lineTo(x + 3, y - halfSize + 6)
-                    ctx.closePath()
-                    ctx.fillStyle = '#fff'
-                    ctx.fill()
-                  } else {
-                    // 朝外箭頭
-                    ctx.beginPath()
-                    ctx.moveTo(x, y + halfSize - 2)
-                    ctx.lineTo(x - 3, y + halfSize - 6)
-                    ctx.lineTo(x + 3, y + halfSize - 6)
-                    ctx.closePath()
-                    ctx.fillStyle = '#fff'
-                    ctx.fill()
-                  }
-                }
-              }}
             />
           )}
         </Layer>

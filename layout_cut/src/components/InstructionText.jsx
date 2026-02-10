@@ -5,18 +5,20 @@ function InstructionText({ currentStep, baseImage, segmentedMasks }) {
   if (currentStep === 3 && baseImage && segmentedMasks.length === 0) {
     return (
       <div style={{
-        marginLeft: '320px', // 與 KonvaCanvas 左側對齊（為左側面板留出空間）
-        padding: '20px',
-        paddingTop: '10px',
-        paddingBottom: '10px'
+        padding: '15px',
+        flexShrink: 0
       }}>
         <div style={{
-          fontSize: '16px',
-          color: '#fff',
+          fontSize: '14px',
+          color: '#333',
           lineHeight: '1.6',
-          textAlign: 'left'
+          textAlign: 'left',
+          backgroundColor: '#fff',
+          padding: '12px 16px',
+          borderRadius: '4px',
+          border: '1px solid #e0e0e0'
         }}>
-          <div style={{ marginBottom: '8px' }}>
+          <div style={{ marginBottom: '6px' }}>
             1. 請使用紅色畫筆 圈選欲分割出的圖層
           </div>
           <div>
