@@ -382,24 +382,72 @@ async def segment_with_mask(
         # 轉換為 [x, y, x, y] 格式（左上角和右下角）
         input_box = np.array([x_min, y_min, x_max, y_max])
         
-        # 執行預測
+        # 執行預測（使用 multimask_output=True 獲取多個候選 mask，然後選擇最佳）
         masks, scores, logits = predictor.predict(
             point_coords=None,
             point_labels=None,
             box=input_box[np.newaxis, :],
             mask_input=mask_input,
-            multimask_output=False
+            multimask_output=True  # 改為 True 以獲取多個候選 mask
         )
         
-        # 使用最佳 mask
-        best_mask = masks[0]
+        # 選擇分數最高的 mask（通常 scores[0] 是最佳的）
+        best_mask_idx = 0
+        if len(scores) > 1:
+            # 選擇分數最高的 mask
+            best_mask_idx = np.argmax(scores)
+        
+        best_mask = masks[best_mask_idx]
         best_mask_binary = (best_mask > 0).astype(np.uint8) * 255
+        
+        print(f"調試: 原始 mask 像素數: {(best_mask_binary > 0).sum()}, 尺寸: {best_mask_binary.shape}")
+        
+        # 形態學處理：填孔 + 平滑 + 去除噪音
+        # 在 resize 之前進行處理，效率更高
+        
+        # 1. CLOSE 操作：先膨脹後腐蝕，用於填補內部小孔洞和連接斷開的區域
+        # 使用較大的 kernel 來填補較大的孔洞
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        mask_closed = cv2.morphologyEx(best_mask_binary, cv2.MORPH_CLOSE, kernel_close, iterations=2)
+        
+        # 2. OPEN 操作：先腐蝕後膨脹，用於去除小噪點、毛刺和邊緣不平滑
+        # 使用較小的 kernel 來精細去除噪點
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask_opened = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel_open, iterations=1)
+        
+        # 3. 再次 CLOSE 以確保邊緣平滑並填補可能殘留的小孔
+        kernel_close_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask_final = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel_close_small, iterations=1)
+        
+        # 4. 可選：使用中值濾波進一步平滑邊緣（去除小噪點）
+        mask_final = cv2.medianBlur(mask_final, 3)
+        
+        # 5. 確保二值化（中值濾波後可能產生灰度值）
+        mask_final = (mask_final > 127).astype(np.uint8) * 255
+        
+        print(f"調試: 形態學處理完成，處理後 mask 像素數: {(mask_final > 0).sum()}")
         
         # 將 mask resize 回原始圖像尺寸
         best_mask_original_size = cv2.resize(
-            best_mask_binary, 
+            mask_final, 
             (original_width, original_height), 
             interpolation=cv2.INTER_NEAREST
+        )
+        
+        # Resize 後再次進行輕微的形態學處理以確保邊緣平滑
+        # 使用較小的 kernel，避免過度處理
+        kernel_smooth = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        best_mask_original_size = cv2.morphologyEx(
+            best_mask_original_size, 
+            cv2.MORPH_CLOSE, 
+            kernel_smooth, 
+            iterations=1
+        )
+        best_mask_original_size = cv2.morphologyEx(
+            best_mask_original_size, 
+            cv2.MORPH_OPEN, 
+            kernel_smooth, 
+            iterations=1
         )
         
         # 提取 mask 區域的邊界框（基於原始尺寸的 mask）

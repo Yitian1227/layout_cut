@@ -35,6 +35,21 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
     }
   }, [baseImage])
 
+  // 清除所有筆刷路徑和狀態
+  const clearAllPaths = useCallback(() => {
+    setBrushPath([])
+    setAddPaths([])
+    setSubtractPaths([])
+    setCurrentPath([])
+    setPolygonPoints([])
+    setIsPolygonClosed(false)
+    setRectangleStart(null)
+    setRectangleEnd(null)
+    setIsDrawingRectangle(false)
+    hoverPointRef.current = null
+    setIsBrushMode(false)
+  }, [])
+
   // 當工具被隱藏時，自動切換到 brush
   useEffect(() => {
     if (!SHOW_POLYGON_TOOL && toolType === 'polygon') {
@@ -232,7 +247,123 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
     })
   }, [brushPath])
 
-  // 確認圈選並發送到後端
+  // 檢測連通區域（使用 Flood Fill 算法）
+  const findConnectedComponents = useCallback((imageData, width, height) => {
+    const visited = new Array(width * height).fill(false)
+    const components = []
+    
+    // 檢查像素是否為白色（選中區域）
+    const isWhitePixel = (x, y) => {
+      if (x < 0 || x >= width || y < 0 || y >= height) return false
+      const pixelIndex = (y * width + x) * 4
+      const r = imageData.data[pixelIndex]
+      const g = imageData.data[pixelIndex + 1]
+      const b = imageData.data[pixelIndex + 2]
+      // 檢查是否為白色（值大於 127）
+      return r > 127 || g > 127 || b > 127
+    }
+    
+    const floodFill = (startX, startY) => {
+      const stack = [[startX, startY]]
+      const component = []
+      const minX = { value: startX }
+      const maxX = { value: startX }
+      const minY = { value: startY }
+      const maxY = { value: startY }
+      
+      while (stack.length > 0) {
+        const [x, y] = stack.pop()
+        const index = y * width + x
+        
+        if (x < 0 || x >= width || y < 0 || y >= height || visited[index]) {
+          continue
+        }
+        
+        if (isWhitePixel(x, y)) {
+          visited[index] = true
+          component.push({ x, y })
+          
+          // 更新邊界
+          minX.value = Math.min(minX.value, x)
+          maxX.value = Math.max(maxX.value, x)
+          minY.value = Math.min(minY.value, y)
+          maxY.value = Math.max(maxY.value, y)
+          
+          // 檢查四個方向的鄰居
+          stack.push([x + 1, y])
+          stack.push([x - 1, y])
+          stack.push([x, y + 1])
+          stack.push([x, y - 1])
+        }
+      }
+      
+      // 只返回有足夠像素的區域（過濾噪點）
+      if (component.length > 100) {
+        return {
+          pixels: component,
+          bounds: {
+            minX: minX.value,
+            maxX: maxX.value,
+            minY: minY.value,
+            maxY: maxY.value
+          }
+        }
+      }
+      return null
+    }
+    
+    // 遍歷所有像素，找到所有連通區域
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const index = y * width + x
+        if (!visited[index] && isWhitePixel(x, y)) {
+          const component = floodFill(x, y)
+          if (component) {
+            components.push(component)
+          }
+        }
+      }
+    }
+    
+    return components
+  }, [])
+
+  // 為單個區域創建 mask（使用 ImageData 直接操作像素，更高效）
+  const createMaskForRegion = useCallback((component, width, height) => {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    canvas.width = width
+    canvas.height = height
+    
+    // 創建 ImageData
+    const imageData = ctx.createImageData(width, height)
+    const data = imageData.data
+    
+    // 初始化為黑色（RGBA: 0, 0, 0, 255）
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 0     // R
+      data[i + 1] = 0 // G
+      data[i + 2] = 0 // B
+      data[i + 3] = 255 // A
+    }
+    
+    // 將該區域的像素設為白色
+    component.pixels.forEach(point => {
+      const index = (point.y * width + point.x) * 4
+      data[index] = 255     // R
+      data[index + 1] = 255 // G
+      data[index + 2] = 255 // B
+      data[index + 3] = 255 // A
+    })
+    
+    // 將 ImageData 繪製到 canvas
+    ctx.putImageData(imageData, 0, 0)
+    
+    // 轉換為 base64
+    return canvas.toDataURL('image/png').split(',')[1]
+  }, [])
+
+  // 確認圈選並發送到後端（支持多個獨立區域）
   const handleConfirmBrush = useCallback(async (onSuccess) => {
     if (!baseImage || !selectedFile) {
       throw new Error('請先上傳圖片')
@@ -256,8 +387,10 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
       const ctx = canvas.getContext('2d')
       
       // 設置 canvas 尺寸為圖片尺寸
-      canvas.width = imageSize.width || 1000
-      canvas.height = imageSize.height || 800
+      const width = imageSize.width || 1000
+      const height = imageSize.height || 800
+      canvas.width = width
+      canvas.height = height
       
       // 填充黑色背景
       ctx.fillStyle = 'black'
@@ -331,36 +464,75 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
         ctx.globalCompositeOperation = 'source-over'
       }
       
-      // 轉換為 base64
-      const base64Mask = canvas.toDataURL('image/png').split(',')[1]
+      // 獲取圖像數據
+      const imageData = ctx.getImageData(0, 0, width, height)
       
-      // 發送到後端
-      const formData = new FormData()
-      formData.append('file', selectedFile)
-      formData.append('mask', base64Mask)
+      // 檢測連通區域（識別多個獨立的圈選物件）
+      const connectedComponents = findConnectedComponents(imageData, width, height)
       
-      const response = await fetch('http://localhost:8000/segment-with-mask', {
-        method: 'POST',
-        body: formData
-      })
+      console.log(`檢測到 ${connectedComponents.length} 個獨立區域`)
       
-      if (!response.ok) {
-        let errorText = ''
-        try {
-          errorText = await response.text()
-        } catch (e) {
-          errorText = '無法讀取錯誤訊息'
-        }
-        throw new Error(`HTTP ${response.status}: ${errorText || '後端服務返回錯誤'}`)
+      // 如果沒有檢測到任何區域，拋出錯誤
+      if (connectedComponents.length === 0) {
+        throw new Error('未檢測到有效的圈選區域，請確保圈選區域足夠大')
       }
       
-      const data = await response.json()
+      // 為每個獨立區域分別調用後端 API
+      const allMasks = []
+      
+      // 顯示進度（如果有多個區域）
+      if (connectedComponents.length > 1) {
+        console.log(`開始為 ${connectedComponents.length} 個區域分別進行分割...`)
+      }
+      
+      for (let i = 0; i < connectedComponents.length; i++) {
+        const region = connectedComponents[i]
+        
+        if (connectedComponents.length > 1) {
+          console.log(`處理區域 ${i + 1}/${connectedComponents.length}...`)
+        }
+        
+        // 為該區域創建單獨的 mask
+        const regionMask = createMaskForRegion(region, width, height)
+        
+        // 發送到後端
+        const formData = new FormData()
+        formData.append('file', selectedFile)
+        formData.append('mask', regionMask)
+        
+        const response = await fetch('http://localhost:8000/segment-with-mask', {
+          method: 'POST',
+          body: formData
+        })
+        
+        if (!response.ok) {
+          let errorText = ''
+          try {
+            errorText = await response.text()
+          } catch (e) {
+            errorText = '無法讀取錯誤訊息'
+          }
+          throw new Error(`區域 ${i + 1} 分割失敗: HTTP ${response.status}: ${errorText || '後端服務返回錯誤'}`)
+        }
+        
+        const data = await response.json()
+        
+        // 收集該區域的分割結果
+        if (data.masks && data.masks.length > 0) {
+          allMasks.push(...data.masks)
+        }
+      }
+      
+      console.log(`成功分割 ${allMasks.length} 個圖層`)
+      
+      // 合併所有區域的分割結果
+      const combinedData = { masks: allMasks }
       
       if (onSuccess) {
-        onSuccess(data)
+        onSuccess(combinedData)
       }
       
-      return data
+      return combinedData
     } catch (error) {
       console.error('確認圈選時發生錯誤:', error)
       
@@ -379,10 +551,11 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
       alert(errorMessage)
       throw error
     }
-  }, [baseImage, selectedFile, imageSize, brushPath, addPaths, subtractPaths, polygonPoints, isPolygonClosed, rectangleStart, rectangleEnd])
+  }, [baseImage, selectedFile, imageSize, brushPath, addPaths, subtractPaths, polygonPoints, isPolygonClosed, rectangleStart, rectangleEnd, findConnectedComponents, createMaskForRegion])
 
   return {
     isBrushMode,
+    setIsBrushMode,
     toolType,
     setToolType,
     brushMode,
@@ -406,7 +579,8 @@ export function useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
     handleRectangleStart,
     handleRectangleUpdate,
     handleRectangleEnd,
-    handleConfirmBrush
+    handleConfirmBrush,
+    clearAllPaths
   }
 }
 

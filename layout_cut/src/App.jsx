@@ -64,6 +64,7 @@ function App() {
   // 畫筆工具（使用自定義 hook）
   const {
     isBrushMode,
+    setIsBrushMode,
     toolType,
     setToolType,
     brushMode,
@@ -87,7 +88,8 @@ function App() {
     handleRectangleStart,
     handleRectangleUpdate,
     handleRectangleEnd,
-    handleConfirmBrush: handleConfirmBrushInternal
+    handleConfirmBrush: handleConfirmBrushInternal,
+    clearAllPaths
   } = useBrushTool(baseImage, segmentedMasks, selectedFile, imageSize)
   
   // 圖層初始化（使用自定義 hook）
@@ -97,7 +99,8 @@ function App() {
     isSegmenting,
     imageSize,
     layerManagement,
-    setCurrentStep
+    setCurrentStep,
+    setCompletedSteps
   )
 
   // 圖片載入完成後，立即進入畫布模式
@@ -195,8 +198,8 @@ function App() {
       await handleConfirmBrushInternal((data) => {
         // 設置分割結果
         setSegmentedMasks(data.masks || [])
-        // 標記 step 2（圈選物件）為完成
-        setCompletedSteps([1, 2])
+        // 標記 step 2（圈選物件）和 step 3（物件分割）為完成
+        setCompletedSteps([1, 2, 3])
         // 設置當前步驟為 2（useLayerInitialization 會自動進入 step 3）
         setCurrentStep(2)
       })
@@ -207,6 +210,20 @@ function App() {
       setIsSegmenting(false)
     }
   }
+
+  // 當圖層列表有圖層時，清除筆刷路徑並退出筆刷模式
+  useEffect(() => {
+    if (layers.length > 0) {
+      // 清除所有筆刷路徑和狀態
+      if (clearAllPaths) {
+        clearAllPaths()
+      }
+      // 確保退出筆刷模式
+      if (setIsBrushMode) {
+        setIsBrushMode(false)
+      }
+    }
+  }, [layers.length, clearAllPaths, setIsBrushMode])
 
   return (
     <div className="card" style={currentStep === 3 && imageSize.width > 0 ? { padding: 0, margin: 0 } : {}}>

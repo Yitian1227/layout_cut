@@ -480,7 +480,8 @@ function KonvaCanvas({
       >
         <Layer>
           {/* 1. 背景圖片（最底层） */}
-          {baseImage && (
+          {/* 當圖層列表有圖層時，隱藏 baseImage */}
+          {baseImage && layers.length === 0 && (
             <BackgroundImage
               src={baseImage}
               imageSize={imageSize}

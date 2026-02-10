@@ -109,16 +109,19 @@ function LeftSidebar({
       />
 
       {/* 畫筆工具 - 置於說明文字下方，圖層列表上方 */}
-      <BrushTool
-        isBrushMode={isBrushMode}
-        toolType={toolType}
-        onSetToolType={onSetToolType}
-        brushMode={brushMode}
-        onSetBrushMode={onSetBrushMode}
-        brushSize={brushSize}
-        onBrushSizeChange={onBrushSizeChange}
-        hasBrushPath={hasBrushPath}
-      />
+      {/* 當圖層列表有圖層時，隱藏筆刷工具 */}
+      {layers.length === 0 && (
+        <BrushTool
+          isBrushMode={isBrushMode}
+          toolType={toolType}
+          onSetToolType={onSetToolType}
+          brushMode={brushMode}
+          onSetBrushMode={onSetBrushMode}
+          brushSize={brushSize}
+          onBrushSizeChange={onBrushSizeChange}
+          hasBrushPath={hasBrushPath}
+        />
+      )}
       
       {/* 開始分割圖層按鈕 - 取代原本的"確認圈選"按鈕 */}
       {baseImage && (

@@ -9,7 +9,8 @@ export function useLayerInitialization(
   isSegmenting,
   imageSize,
   layerManagement,
-  setCurrentStep
+  setCurrentStep,
+  setCompletedSteps
 ) {
   useEffect(() => {
     if (segmentedMasks.length > 0 && currentStep === 2 && !isSegmenting) {
@@ -35,8 +36,17 @@ export function useLayerInitialization(
       layerManagement.setSelectedLayers([])
       layerManagement.setHoveredLayerIndex(null)
       setCurrentStep(3)
+      // 標記 step 3（物件分割）為完成
+      if (setCompletedSteps) {
+        setCompletedSteps(prev => {
+          if (!prev.includes(3)) {
+            return [...prev, 3]
+          }
+          return prev
+        })
+      }
       // 初始化圖層列表項引用數組
       layerManagement.layerItemRefs.current = new Array(initialLayers.length).fill(null).map(() => ({ current: null }))
     }
-  }, [segmentedMasks, currentStep, isSegmenting, imageSize, layerManagement, setCurrentStep])
+  }, [segmentedMasks, currentStep, isSegmenting, imageSize, layerManagement, setCurrentStep, setCompletedSteps])
 }
