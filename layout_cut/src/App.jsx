@@ -3,7 +3,6 @@ import './App.css'
 
 // 導入組件
 import ProgressBar from './components/ProgressBar'
-import UploadSection from './components/UploadSection'
 import SegmentButton from './components/SegmentButton'
 import SegmentedPreview from './components/SegmentedPreview'
 import KonvaCanvas from './components/Canvas/KonvaCanvas'
@@ -106,11 +105,13 @@ function App() {
   )
 
   // 圖片載入完成後，立即進入畫布模式
+  // 但不要在分割過程中干擾流程（當 isSegmenting 為 true 時不執行）
   useEffect(() => {
-    if (baseImage && imageSize.width > 0) {
+    if (baseImage && imageSize.width > 0 && !isSegmenting && layers.length === 0) {
+      // 一上傳完圖片立刻轉入編輯畫面
       setCurrentStep(3)
     }
-  }, [baseImage, imageSize.width, setCurrentStep])
+  }, [baseImage, imageSize.width, isSegmenting, layers.length, setCurrentStep])
 
   const handleImageUpload = (event) => {
     const file = event.target.files[0]
@@ -123,6 +124,8 @@ function App() {
         setCompletedSteps([1])
         // 清空圖層編輯相關狀態
         layerManagement.clearLayers()
+        // 一上傳完圖片立刻轉入編輯畫面
+        setCurrentStep(3)
       }
       reader.readAsDataURL(file)
     }
@@ -259,21 +262,26 @@ function App() {
 
   // 畫筆確認回調 - 按下"開始分割圖層"按鈕時觸發圖層分割
   const handleConfirmBrush = async () => {
+    // 立即標記 step 2（圈選物件）為完成，並開始分割
+    setCompletedSteps([1, 2])
     setIsSegmenting(true)
     try {
       await handleConfirmBrushInternal((data) => {
-        // 設置分割結果
+        // 關鍵修復：確保狀態更新的正確順序，避免競態條件
+        // React 18 會自動批處理這些狀態更新，但我們需要確保順序
+        // 1. 先設置分割結果和當前步驟（在同一個渲染週期中）
         setSegmentedMasks(data.masks || [])
-        // 標記 step 2（圈選物件）為完成
-        // step 3（物件分割）的完成狀態將由 useLayerInitialization 在圖層初始化時設置
-        setCompletedSteps([1, 2])
-        // 設置當前步驟為 2（useLayerInitialization 會自動進入 step 3）
         setCurrentStep(2)
+        // 2. 使用 requestAnimationFrame 確保在下一個渲染週期設置 isSegmenting
+        // 這樣可以確保 useLayerInitialization 的 useEffect 能正確觸發
+        // 因為 useLayerInitialization 需要 segmentedMasks.length > 0 && currentStep === 2 && !isSegmenting
+        requestAnimationFrame(() => {
+          setIsSegmenting(false)
+        })
       })
     } catch (error) {
       // 错误已在 handleConfirmBrushInternal 中处理
       console.error('確認圈選時發生錯誤:', error)
-    } finally {
       setIsSegmenting(false)
     }
   }
@@ -294,25 +302,74 @@ function App() {
 
   return (
     <div className="card" style={currentStep === 3 && imageSize.width > 0 ? { padding: 0, margin: 0 } : {}}>
-      {/* 進度條 - 始終固定在頂部 */}
-      <ProgressBar 
-        stepNames={stepNames}
-        currentStep={currentStep}
-        completedSteps={completedSteps}
-        isSegmenting={isSegmenting}
-      />
-
-      {/* 非畫布模式時顯示的內容 */}
+      {/* 非畫布模式時顯示的內容 - 垂直居中 */}
       {currentStep !== 3 && (
-        <>
-          {/* 上傳區域 */}
-          <UploadSection
-            baseImage={baseImage}
-            fileInputRef={fileInputRef}
-            onImageUpload={handleImageUpload}
-            onButtonClick={handleButtonClick}
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: '100vh',
+          gap: '40px'
+        }}>
+          {/* 進度條 - 垂直居中 */}
+          <ProgressBar 
+            stepNames={stepNames}
             currentStep={currentStep}
+            completedSteps={completedSteps}
+            isSegmenting={isSegmenting}
           />
+
+          {/* 上傳區域 */}
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '20px'
+          }}>
+            <input
+              type="file"
+              accept="image/*"
+              ref={fileInputRef}
+              onChange={handleImageUpload}
+              style={{ display: 'none' }}
+            />
+            <button 
+              onClick={handleButtonClick}
+              style={{
+                padding: '12px 24px',
+                fontSize: '16px',
+                backgroundColor: '#1a1a1a',
+                color: '#e0e0e0',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontWeight: '500'
+              }}
+            >
+              {baseImage ? '替換圖片' : '新增圖片'}
+            </button>
+            
+            {baseImage && (
+              <div style={{
+                marginTop: '20px',
+                maxWidth: '100%',
+                textAlign: 'center'
+              }}>
+                <img 
+                  src={baseImage} 
+                  alt="預覽" 
+                  style={{
+                    maxWidth: '100%',
+                    maxHeight: '400px',
+                    borderRadius: '8px',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                  }}
+                />
+              </div>
+            )}
+          </div>
 
           {/* 分割按鈕 */}
           <SegmentButton
@@ -321,7 +378,17 @@ function App() {
             hasSegmentedMasks={segmentedMasks.length > 0}
             onSegment={handleSegmentImage}
           />
-        </>
+        </div>
+      )}
+
+      {/* 畫布模式時進度條固定在頂部 */}
+      {currentStep === 3 && imageSize.width > 0 && (
+        <ProgressBar 
+          stepNames={stepNames}
+          currentStep={currentStep}
+          completedSteps={completedSteps}
+          isSegmenting={isSegmenting}
+        />
       )}
 
       {/* 圖層編輯模式 */}

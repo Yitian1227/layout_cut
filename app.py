@@ -402,25 +402,42 @@ async def segment_with_mask(
         
         print(f"調試: 原始 mask 像素數: {(best_mask_binary > 0).sum()}, 尺寸: {best_mask_binary.shape}")
         
+        # 關鍵修復：立即使用用戶原始 mask 約束預測結果，確保嚴格遵守用戶圈選範圍
+        # 這可以防止 SAM 預測出超出用戶圈選範圍的區域，避免破碎問題
+        best_mask_binary = cv2.bitwise_and(best_mask_binary, resized_mask)
+        print(f"調試: 約束後 mask 像素數: {(best_mask_binary > 0).sum()}")
+        
         # 形態學處理：填孔 + 平滑 + 去除噪音
         # 在 resize 之前進行處理，效率更高
         
         # 1. CLOSE 操作：先膨脹後腐蝕，用於填補內部小孔洞和連接斷開的區域
         # 使用較大的 kernel 來填補較大的孔洞
-        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        mask_closed = cv2.morphologyEx(best_mask_binary, cv2.MORPH_CLOSE, kernel_close, iterations=2)
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        mask_closed = cv2.morphologyEx(best_mask_binary, cv2.MORPH_CLOSE, kernel_close, iterations=3)
+        
+        # 再次約束，確保形態學處理後仍然遵守用戶圈選範圍
+        mask_closed = cv2.bitwise_and(mask_closed, resized_mask)
         
         # 2. OPEN 操作：先腐蝕後膨脹，用於去除小噪點、毛刺和邊緣不平滑
         # 使用較小的 kernel 來精細去除噪點
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         mask_opened = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel_open, iterations=1)
         
+        # 再次約束，確保 OPEN 操作後仍然遵守用戶圈選範圍
+        mask_opened = cv2.bitwise_and(mask_opened, resized_mask)
+        
         # 3. 再次 CLOSE 以確保邊緣平滑並填補可能殘留的小孔
-        kernel_close_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask_final = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel_close_small, iterations=1)
+        kernel_close_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        mask_final = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel_close_small, iterations=2)
+        
+        # 再次約束，確保最終結果仍然遵守用戶圈選範圍
+        mask_final = cv2.bitwise_and(mask_final, resized_mask)
         
         # 4. 可選：使用中值濾波進一步平滑邊緣（去除小噪點）
         mask_final = cv2.medianBlur(mask_final, 3)
+        
+        # 再次約束，確保中值濾波後仍然遵守用戶圈選範圍
+        mask_final = cv2.bitwise_and(mask_final, resized_mask)
         
         # 5. 確保二值化（中值濾波後可能產生灰度值）
         mask_final = (mask_final > 127).astype(np.uint8) * 255
@@ -434,21 +451,81 @@ async def segment_with_mask(
             interpolation=cv2.INTER_NEAREST
         )
         
-        # Resize 後再次進行輕微的形態學處理以確保邊緣平滑
-        # 使用較小的 kernel，避免過度處理
-        kernel_smooth = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        # 創建用戶原始 mask 的原始尺寸版本，用於約束
+        user_mask_original = cv2.resize(binary_mask, (original_width, original_height), interpolation=cv2.INTER_NEAREST)
+        user_mask_original = (user_mask_original > 127).astype(np.uint8) * 255
+        
+        # 關鍵修復：resize 後立即約束，防止 resize 引入超出範圍的像素
+        best_mask_original_size = cv2.bitwise_and(best_mask_original_size, user_mask_original)
+        
+        # Resize 後進行更強的形態學處理以修復破碎和填補孔洞
+        # 1. 使用較大的 CLOSE kernel 來填補 resize 可能引入的孔洞
+        kernel_close_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
         best_mask_original_size = cv2.morphologyEx(
             best_mask_original_size, 
             cv2.MORPH_CLOSE, 
-            kernel_smooth, 
-            iterations=1
+            kernel_close_large, 
+            iterations=3  # 增加迭代次數以更好地填補孔洞
         )
+        # 約束：確保遵守用戶原始圈選範圍
+        best_mask_original_size = cv2.bitwise_and(best_mask_original_size, user_mask_original)
+        
+        # 2. 使用 OPEN 去除小噪點，但使用較小的 kernel 避免過度去除
+        kernel_open_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         best_mask_original_size = cv2.morphologyEx(
             best_mask_original_size, 
             cv2.MORPH_OPEN, 
-            kernel_smooth, 
+            kernel_open_small, 
             iterations=1
         )
+        # 約束：確保 OPEN 操作後仍然遵守用戶圈選範圍
+        best_mask_original_size = cv2.bitwise_and(best_mask_original_size, user_mask_original)
+        
+        # 3. 再次 CLOSE 以確保邊緣平滑並填補可能殘留的小孔
+        kernel_close_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        best_mask_original_size = cv2.morphologyEx(
+            best_mask_original_size, 
+            cv2.MORPH_CLOSE, 
+            kernel_close_medium, 
+            iterations=2
+        )
+        # 最終約束：確保最終結果嚴格遵守用戶圈選範圍
+        best_mask_original_size = cv2.bitwise_and(best_mask_original_size, user_mask_original)
+        
+        # 4. 使用 GaussianBlur 平滑邊緣，然後二值化
+        best_mask_original_size = cv2.GaussianBlur(best_mask_original_size, (5, 5), 1.5)
+        best_mask_original_size = (best_mask_original_size > 127).astype(np.uint8) * 255
+        
+        # 5. 使用中值濾波進一步平滑邊緣，減少鋸齒狀邊緣
+        best_mask_original_size = cv2.medianBlur(best_mask_original_size, 5)  # 使用 5x5 而不是 3x3
+        
+        # 最終約束：確保中值濾波後仍然遵守用戶圈選範圍
+        best_mask_original_size = cv2.bitwise_and(best_mask_original_size, user_mask_original)
+        
+        # 6. 填充內部孔洞（使用 floodFill）
+        # 找到所有連通區域，填充內部孔洞
+        h, w = best_mask_original_size.shape
+        mask_filled = best_mask_original_size.copy()
+        
+        # 從邊緣開始 floodFill，將邊緣外的區域標記為背景
+        # 然後反轉，填充內部孔洞
+        mask_inv = cv2.bitwise_not(mask_filled)
+        mask_temp = mask_inv.copy()
+        
+        # 填充邊緣外的區域
+        cv2.floodFill(mask_temp, None, (0, 0), 255)
+        cv2.floodFill(mask_temp, None, (w-1, 0), 255)
+        cv2.floodFill(mask_temp, None, (0, h-1), 255)
+        cv2.floodFill(mask_temp, None, (w-1, h-1), 255)
+        
+        # 反轉得到填充後的 mask（邊緣外的區域被填充，內部孔洞也被填充）
+        mask_filled = cv2.bitwise_not(mask_temp)
+        
+        # 約束：確保填充後仍然遵守用戶圈選範圍
+        best_mask_original_size = cv2.bitwise_and(mask_filled, user_mask_original)
+        
+        # 7. 確保二值化
+        best_mask_original_size = (best_mask_original_size > 127).astype(np.uint8) * 255
         
         # 提取 mask 區域的邊界框（基於原始尺寸的 mask）
         coords = np.column_stack(np.where(best_mask_original_size > 0))

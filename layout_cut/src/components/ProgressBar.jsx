@@ -13,8 +13,9 @@ function ProgressBar({ stepNames, currentStep, completedSteps, isSegmenting }) {
         const isCompleted = completedSteps.includes(stepNumber)
         const isCurrent = currentStep === stepNumber
         const isActive = isCurrent || (isCompleted && !isSegmenting)
-        // 在 loading 狀態時，step 2 不應該顯示為完成
-        const showCompleted = isCompleted && !(isSegmenting && index === 1)
+        // 第二項（圈選物件）在分割時應該顯示為完成
+        // 第三項（物件分割）在分割時顯示 loading，不顯示完成狀態
+        const showCompleted = isCompleted && !(isSegmenting && index === 2)
         
         return (
           <div key={index} style={{ display: 'flex', alignItems: 'center' }}>
@@ -46,7 +47,8 @@ function ProgressBar({ stepNames, currentStep, completedSteps, isSegmenting }) {
                 gap: '6px'
               }}>
                 {stepName}
-                {isSegmenting && index === 1 && (
+                {/* 第三項（物件分割）在分割時顯示 loading */}
+                {isSegmenting && index === 2 && (
                   <div
                     style={{
                       width: '16px',

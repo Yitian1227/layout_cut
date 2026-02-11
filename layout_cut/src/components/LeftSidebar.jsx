@@ -87,19 +87,21 @@ function LeftSidebar({
         </button>
       </div>
 
-      {/* 控制面板 */}
-      <div style={{ padding: '15px', flexShrink: 0 }}>
-        <ControlPanel
-          selectedLayers={selectedLayers}
-          selectedLayerIndex={selectedLayerIndex}
-          layers={layers}
-          onMergeLayers={onMergeLayers}
-          onScaleLayer={onScaleLayer}
-          onRotateLayer={onRotateLayer}
-          onToggleLayerVisible={onToggleLayerVisible}
-          onDeleteLayer={onDeleteLayer}
-        />
-      </div>
+      {/* 控制面板 - 只在圖層分割完成後顯示 */}
+      {layers.length > 0 && (
+        <div style={{ padding: '15px', flexShrink: 0 }}>
+          <ControlPanel
+            selectedLayers={selectedLayers}
+            selectedLayerIndex={selectedLayerIndex}
+            layers={layers}
+            onMergeLayers={onMergeLayers}
+            onScaleLayer={onScaleLayer}
+            onRotateLayer={onRotateLayer}
+            onToggleLayerVisible={onToggleLayerVisible}
+            onDeleteLayer={onDeleteLayer}
+          />
+        </div>
+      )}
 
       {/* 說明文字 - 置於控制面板下方，圖層列表上方 */}
       <InstructionText
@@ -130,22 +132,25 @@ function LeftSidebar({
             baseImage={baseImage}
             isSegmenting={isSegmenting}
             hasSegmentedMasks={false}
+            hasBrushPath={hasBrushPath}
             onSegment={onConfirmBrush}
           />
         </div>
       )}
       
-      {/* 圖層列表 */}
-      <div style={{ padding: '15px', flex: 1, minHeight: 0 }}>
-        <LayerList
-          layers={layers}
-          selectedLayerIndex={selectedLayerIndex}
-          selectedLayers={selectedLayers}
-          hoveredLayerIndex={hoveredLayerIndex}
-          onLayerClick={onLayerClick}
-          layerItemRefs={layerItemRefs}
-        />
-      </div>
+      {/* 圖層列表 - 只在圖層分割完成後顯示 */}
+      {layers.length > 0 && (
+        <div style={{ padding: '15px', flex: 1, minHeight: 0 }}>
+          <LayerList
+            layers={layers}
+            selectedLayerIndex={selectedLayerIndex}
+            selectedLayers={selectedLayers}
+            hoveredLayerIndex={hoveredLayerIndex}
+            onLayerClick={onLayerClick}
+            layerItemRefs={layerItemRefs}
+          />
+        </div>
+      )}
     </div>
   )
 }
