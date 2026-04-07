@@ -1228,12 +1228,13 @@ function App() {
             >
               <button
                 type="button"
+                className="animation-history-icon-btn"
                 onClick={handleModalDownloadClick}
                 title="下載影片"
                 aria-label="下載影片"
                 style={{
                   border: 'none',
-                  background: '#e8f4ff',
+                  background: '#fff',
                   borderRadius: '6px',
                   width: '36px',
                   height: '36px',
@@ -1241,30 +1242,49 @@ function App() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#1a73e8'
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.12)'
                 }}
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg
+                  className="animation-history-icon-svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  strokeWidth="2"
+                >
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
                 </svg>
               </button>
               <button
                 type="button"
+                className="animation-history-icon-btn"
                 onClick={closeVideoModal}
                 style={{
                   border: 'none',
-                  background: '#eee',
+                  background: '#fff',
                   borderRadius: '6px',
                   width: '36px',
                   height: '36px',
                   cursor: 'pointer',
-                  fontSize: '20px',
-                  lineHeight: 1,
-                  color: '#333'
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.12)'
                 }}
                 aria-label="關閉"
               >
-                ×
+                <svg
+                  className="animation-history-icon-svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  strokeWidth="2"
+                  aria-hidden
+                >
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
               </button>
             </div>
             <h3 style={{ margin: '0 0 16px', fontSize: '18px', color: '#333' }}>
