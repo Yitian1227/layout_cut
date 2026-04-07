@@ -55,6 +55,11 @@ function KonvaCanvas({
   const lastHoverMaskIdRef = useRef(null)
   const autoMaskCanvasCacheRef = useRef(new Map())
   const globalPointerListenerCleanupRef = useRef(null)
+  const currentPathRef = useRef(currentPath)
+
+  useEffect(() => {
+    currentPathRef.current = currentPath
+  }, [currentPath])
 
   // 保留所有 autoMasks（包含大面積背景）
   const displayedAutoMasks = useMemo(() => {
@@ -312,6 +317,7 @@ function KonvaCanvas({
         onPathComplete()
       }
       isDrawingRef.current = true
+      currentPathRef.current = [clickPoint]
       onBrushPathUpdate([clickPoint])
       stage.container().style.cursor = getBrushCursor()
       setupGlobalPointerListeners(stage)
@@ -324,6 +330,7 @@ function KonvaCanvas({
         onPathComplete()
       }
       isDrawingRef.current = true
+      currentPathRef.current = [clickPoint]
       onBrushPathUpdate([clickPoint])
       stage.container().style.cursor = getBrushCursor()
       setupGlobalPointerListeners(stage)
@@ -385,12 +392,16 @@ function KonvaCanvas({
         }
         return
       }
-      
+
+      // 繪製中改由 window 全域 pointer/mouse move 更新，避免出界後凍結
+      if (globalPointerListenerCleanupRef.current) {
+        return
+      }
+
       if (currentPath && currentPath.length > 0) {
         const newPath = [...currentPath, movePoint]
+        currentPathRef.current = newPath
         onBrushPathUpdate(newPath)
-        
-        // 使用 stage.batchDraw() 而不是 brushLayerRef.current.batchDraw()
         stage.batchDraw()
       }
     }
@@ -446,6 +457,25 @@ function KonvaCanvas({
     return { x, y }
   }
 
+  const appendBrushPointFromNativeEvent = (stage, nativeEvt) => {
+    if (!stage || toolType !== 'brush' || !isDrawingRef.current) return
+    const movePoint = getLogicalPointFromNativeEvent(stage, nativeEvt)
+    if (!movePoint) return
+
+    const path = currentPathRef.current || []
+    if (path.length === 0) return
+
+    const lastPoint = path[path.length - 1]
+    if (lastPoint && lastPoint.x === movePoint.x && lastPoint.y === movePoint.y) {
+      return
+    }
+
+    const newPath = [...path, movePoint]
+    currentPathRef.current = newPath
+    onBrushPathUpdate(newPath)
+    stage.batchDraw()
+  }
+
   const finishBrushInteraction = (stage, nativeEvt) => {
     if (!isBrushMode || !stage) return
 
@@ -459,14 +489,16 @@ function KonvaCanvas({
 
     if (toolType === 'brush' && isDrawingRef.current) {
       isDrawingRef.current = false
-      if (currentPath && currentPath.length > 0) {
-        const startPoint = currentPath[0]
+      const path = currentPathRef.current || []
+      if (path.length > 0) {
+        const startPoint = path[0]
         const releasePoint =
           getLogicalPointFromNativeEvent(stage, nativeEvt) ||
-          currentPath[currentPath.length - 1]
+          path[path.length - 1]
 
         // 在放開滑鼠時補上「鬆開點 -> 起點」，確保路徑自動閉合
-        const closedPath = [...currentPath, releasePoint, startPoint]
+        const closedPath = [...path, releasePoint, startPoint]
+        currentPathRef.current = closedPath
         onBrushPathUpdate(closedPath)
         stage.batchDraw()
       }
@@ -483,6 +515,10 @@ function KonvaCanvas({
   const setupGlobalPointerListeners = (stage) => {
     clearGlobalPointerListeners()
 
+    const handleGlobalPointerMove = (nativeEvt) => {
+      appendBrushPointFromNativeEvent(stage, nativeEvt)
+    }
+
     const handleGlobalPointerEnd = (nativeEvt) => {
       finishBrushInteraction(stage, nativeEvt)
       clearGlobalPointerListeners()
@@ -496,6 +532,8 @@ function KonvaCanvas({
 
     window.addEventListener('pointerup', handleGlobalPointerEnd)
     window.addEventListener('mouseup', handleGlobalPointerEnd)
+    window.addEventListener('pointermove', handleGlobalPointerMove)
+    window.addEventListener('mousemove', handleGlobalPointerMove)
     window.addEventListener('pointercancel', handleGlobalPointerEnd)
     window.addEventListener('mouseleave', handleGlobalMouseLeave)
     window.addEventListener('blur', handleGlobalPointerEnd)
@@ -503,6 +541,8 @@ function KonvaCanvas({
     globalPointerListenerCleanupRef.current = () => {
       window.removeEventListener('pointerup', handleGlobalPointerEnd)
       window.removeEventListener('mouseup', handleGlobalPointerEnd)
+      window.removeEventListener('pointermove', handleGlobalPointerMove)
+      window.removeEventListener('mousemove', handleGlobalPointerMove)
       window.removeEventListener('pointercancel', handleGlobalPointerEnd)
       window.removeEventListener('mouseleave', handleGlobalMouseLeave)
       window.removeEventListener('blur', handleGlobalPointerEnd)
