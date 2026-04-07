@@ -1,8 +1,62 @@
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  flex: 1;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  text-align: initial;
+}
+
+.upload-preview-frame {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 20px;
+  width: 100%;
+  max-width: 100%;
+}
+
+.upload-preview-img {
+  max-width: 100%;
+  max-height: min(70vh, 560px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  vertical-align: middle;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.canvas-workspace {
+  box-sizing: border-box;
+}
+
+.konva-canvas-shell {
+  box-sizing: border-box;
+}
+
+/* 動畫紀錄卡片：圖示深灰、hover 主題藍（避免繼承到淺色/透明 currentColor 變白） */
+.animation-history-icon-btn {
+  color: #4b5563;
+}
+
+.animation-history-icon-btn:hover {
+  color: #4a90e2;
+}
+
+.animation-history-icon-btn:focus-visible {
+  outline: 2px solid #4a90e2;
+  outline-offset: 2px;
+}
+
+.animation-history-icon-svg {
+  flex-shrink: 0;
+  stroke: #4b5563;
+  transition: stroke 0.15s ease;
+}
+
+.animation-history-icon-btn:hover .animation-history-icon-svg {
+  stroke: #4a90e2;
 }
 
 .logo {
@@ -56,35 +110,41 @@
   height: auto;
 }
 
-/* LeftSidebar 滚动条样式 - 只在鼠标悬停时显示 */
-.left-sidebar-scroll {
+/* LeftSidebar / 右側動畫紀錄：捲軸樣式（懸停時顯示） */
+.left-sidebar-scroll,
+.right-sidebar-scroll {
   scrollbar-width: thin; /* Firefox */
   scrollbar-color: transparent transparent; /* Firefox - 默认透明 */
 }
 
-.left-sidebar-scroll::-webkit-scrollbar {
+.left-sidebar-scroll::-webkit-scrollbar,
+.right-sidebar-scroll::-webkit-scrollbar {
   width: 8px;
 }
 
-.left-sidebar-scroll::-webkit-scrollbar-track {
+.left-sidebar-scroll::-webkit-scrollbar-track,
+.right-sidebar-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.left-sidebar-scroll::-webkit-scrollbar-thumb {
+.left-sidebar-scroll::-webkit-scrollbar-thumb,
+.right-sidebar-scroll::-webkit-scrollbar-thumb {
   background-color: transparent;
   border-radius: 4px;
   transition: background-color 0.2s ease;
 }
 
-/* 鼠标悬停时显示滚动条 */
-.left-sidebar-scroll:hover::-webkit-scrollbar-thumb {
+.left-sidebar-scroll:hover::-webkit-scrollbar-thumb,
+.right-sidebar-scroll:hover::-webkit-scrollbar-thumb {
   background-color: rgba(0, 0, 0, 0.3);
 }
 
-.left-sidebar-scroll:hover {
-  scrollbar-color: rgba(0, 0, 0, 0.3) transparent; /* Firefox - 悬停时显示 */
+.left-sidebar-scroll:hover,
+.right-sidebar-scroll:hover {
+  scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
 }
 
-.left-sidebar-scroll::-webkit-scrollbar-thumb:hover {
+.left-sidebar-scroll::-webkit-scrollbar-thumb:hover,
+.right-sidebar-scroll::-webkit-scrollbar-thumb:hover {
   background-color: rgba(0, 0, 0, 0.5);
 }

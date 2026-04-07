@@ -1,0 +1,51 @@
+layout_cut 專案啟動步驟
+======================
+
+本專案包含兩部分：
+1) 後端：FastAPI（`uvicorn`，預設 `http://localhost:8000`）
+2) 前端：Vite + React（預設 `http://localhost:5173`）
+
+--------------------------------
+一、啟動後端（FastAPI）
+--------------------------------
+1. 開啟一個 PowerShell。
+2. 進入後端目錄（有 `app.py` 的地方）：
+   cd "C:\Users\User\Desktop\layout_cut"
+3. 啟動虛擬環境：
+   & .\venv\Scripts\Activate.ps1
+   （啟動成功後通常會看到命令列前面有 `(venv)`）
+4. 啟動伺服器：
+   uvicorn app:app --reload --port 8000
+
+啟動後確認：
+- API 根路由：http://localhost:8000/
+- 文件頁：http://localhost:8000/docs
+
+注意（SAM 模型檔）：
+- `app.py` 會載入 `./models/sam_vit_b_01ec64.pth`
+- 若檔案不存在，服務仍會啟動，但分割功能會回傳 503/錯誤。
+
+--------------------------------
+二、啟動前端（Vite）
+--------------------------------
+1. 再開啟一個 PowerShell。
+2. 進入前端目錄（有 `package.json` 的地方）：
+   cd "C:\Users\User\Desktop\layout_cut\layout_cut"
+3. 安裝套件（如果你已經裝過可略過）：
+   npm install
+4. 啟動前端：
+   npm run dev
+
+啟動後確認：
+- 前端頁：http://localhost:5173/
+
+--------------------------------
+三、常見問題
+--------------------------------
+1. CORS/介面找不到
+   - 後端 `app.py` 允許的來源是 `http://localhost:5173`
+   - 確保前端是跑在同一個 port（5173），或自行修改 `allow_origins`
+2. 第一次安裝失敗
+   - 後端：先執行 `pip install -r requirements.txt`
+   - 前端：先執行 `npm install`
+

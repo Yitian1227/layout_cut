@@ -1,6 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
+from typing import Optional
+import threading
+import time
+import uuid
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 from segment_anything.utils.transforms import ResizeLongestSide
 import torch
@@ -10,6 +15,185 @@ import base64
 from io import BytesIO
 import os
 import cv2
+import json
+
+# --- Vertex AI：憑證須在 import vertexai 之前設定 GOOGLE_APPLICATION_CREDENTIALS ---
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+VERTEX_KEY_FILE = os.path.join(_APP_DIR, "vertex-key.json")
+VERTEX_AI_PROJECT = "gen-lang-client-0245057021"
+VERTEX_AI_LOCATION = "us-central1"
+vertexai_initialized = False
+# Veo / 影片生成使用 google.genai Client（Vertex 模式），見官方 Image-to-Video 文件
+genai_client = None
+
+# 供 Veo 請求額外參數（SDK 的 GenerateVideosConfig 未宣告 safety_settings，改由 mapper 補上）
+_veo_tls = threading.local()
+_veo_safety_mapper_installed = False
+
+
+def _install_veo_generate_videos_safety_patch() -> None:
+    """將 safetySettings 寫入 Vertex predict 的 parameters（google-genai 預設未映射）。"""
+    global _veo_safety_mapper_installed
+    if _veo_safety_mapper_installed:
+        return
+    from google.genai.models import (
+        _GenerateVideosConfig_to_vertex as _orig_gv_cfg,
+        getv,
+        setv,
+    )
+
+    def _wrapped(from_object, parent_object=None, root_object=None):
+        to_object = _orig_gv_cfg(from_object, parent_object, root_object)
+        extra = getattr(_veo_tls, "safety_settings", None)
+        if extra and parent_object is not None:
+            setv(parent_object, ["parameters", "safetySettings"], list(extra))
+        return to_object
+
+    import google.genai.models as genai_models
+
+    genai_models._GenerateVideosConfig_to_vertex = _wrapped
+    _veo_safety_mapper_installed = True
+    print("已為 Veo 啟用 safetySettings 請求映射（parameters.safetySettings）")
+
+
+if os.path.isfile(VERTEX_KEY_FILE):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath(VERTEX_KEY_FILE)
+    try:
+        import vertexai
+
+        vertexai.init(project=VERTEX_AI_PROJECT, location=VERTEX_AI_LOCATION)
+        vertexai_initialized = True
+        print(
+            f"Vertex AI 已初始化（project={VERTEX_AI_PROJECT}, location={VERTEX_AI_LOCATION}）"
+        )
+        from google import genai
+
+        genai_client = genai.Client(
+            vertexai=True,
+            project=VERTEX_AI_PROJECT,
+            location=VERTEX_AI_LOCATION,
+        )
+        print("Google GenAI Client（Vertex）已建立，可用於 Veo 影片生成")
+        _install_veo_generate_videos_safety_patch()
+    except Exception as e:
+        print(f"Vertex AI / GenAI 初始化失敗: {e}")
+else:
+    print(f"警告: 未找到 {VERTEX_KEY_FILE}，Vertex AI（Veo）相關功能將無法使用")
+
+# Veo 模型 ID（可依專案開通狀況調整，例如 veo-3.1-generate-001）
+VEO_MODEL_ID = os.environ.get("VEO_MODEL_ID", "veo-2.0-generate-001")
+# 若 Vertex 要求寫入 GCS，請設定環境變數，例如：gs://your-bucket/prefix/
+VEO_OUTPUT_GCS_URI = os.environ.get("VEO_OUTPUT_GCS_URI", "").strip() or None
+# 人物生成：dont_allow / allow_adult / allowAll（見 Vertex VideoGenerationModelParams；未設時與 API 預設一致）
+VEO_PERSON_GENERATION = os.environ.get("VEO_PERSON_GENERATION", "allow_adult").strip()
+# 安全閾值：BLOCK_ONLY_HIGH 等（仍受 Veo 後台政策限制，與人物偵測無關）
+VEO_SAFETY_BLOCK_THRESHOLD = os.environ.get(
+    "VEO_SAFETY_BLOCK_THRESHOLD", "BLOCK_ONLY_HIGH"
+).strip()
+
+
+def _veo_resolve_safety_block_threshold() -> str:
+    """回傳 Vertex / Gemini 可辨識的門檻字串（google.genai HarmBlockThreshold）。"""
+    th = (VEO_SAFETY_BLOCK_THRESHOLD or "BLOCK_ONLY_HIGH").strip()
+    allowed = (
+        "BLOCK_NONE",
+        "OFF",
+        "BLOCK_ONLY_HIGH",
+        "BLOCK_MEDIUM_AND_ABOVE",
+        "BLOCK_LOW_AND_ABOVE",
+    )
+    return th if th in allowed else "BLOCK_ONLY_HIGH"
+
+
+def _veo_safety_include_image_categories() -> bool:
+    """是否額外帶入 IMAGE_* harm 類別（需明確設定環境變數才啟用）。"""
+    v = os.environ.get("VEO_SAFETY_INCLUDE_IMAGE_CATEGORIES", "").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+def _veo_safety_settings_as_genai_types() -> list[dict]:
+    """以 SDK SafetySetting 建立，與 GenerateContent 等 API 一致，再轉成 dict 供 mapper 使用。"""
+    from google.genai.types import HarmBlockThreshold, HarmCategory, SafetySetting
+
+    th_raw = _veo_resolve_safety_block_threshold()
+    try:
+        threshold = HarmBlockThreshold(th_raw)
+    except ValueError:
+        threshold = HarmBlockThreshold.BLOCK_ONLY_HIGH
+
+    pairs = [
+        (HarmCategory.HARM_CATEGORY_HARASSMENT, threshold),
+        (HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold),
+        (HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold),
+        (HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold),
+    ]
+    if _veo_safety_include_image_categories():
+        pairs.extend(
+            [
+                (HarmCategory.HARM_CATEGORY_IMAGE_HARASSMENT, threshold),
+                (HarmCategory.HARM_CATEGORY_IMAGE_HATE, threshold),
+                (HarmCategory.HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT, threshold),
+                (HarmCategory.HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT, threshold),
+            ]
+        )
+    out = [
+        SafetySetting(category=c, threshold=t) for c, t in pairs
+    ]
+    return [s.model_dump(mode="json", exclude_none=True) for s in out]
+
+
+def _veo_debug_predict_request_json(
+    *,
+    model_id: str,
+    prompt: str,
+    image_bytes: bytes,
+    image_mime: str,
+    config_kwargs: dict,
+    safety_settings: list[dict],
+    person_generation: str,
+) -> dict:
+    """還原約略的 Vertex predictLongRunning JSON（圖片僅標註長度，避免洗版）。"""
+    b64_len = len(base64.b64encode(image_bytes)) if image_bytes else 0
+    p = {
+        "sampleCount": config_kwargs.get("number_of_videos", 1),
+        "durationSeconds": config_kwargs.get("duration_seconds"),
+        "aspectRatio": config_kwargs.get("aspect_ratio"),
+        "personGeneration": person_generation,
+        "safetySettings": safety_settings,
+    }
+    if config_kwargs.get("output_gcs_uri"):
+        p["storageUri"] = config_kwargs["output_gcs_uri"]
+    if config_kwargs.get("fps") is not None:
+        p["fps"] = config_kwargs["fps"]
+    if config_kwargs.get("seed") is not None:
+        p["seed"] = config_kwargs["seed"]
+    p = {k: v for k, v in p.items() if v is not None}
+    return {
+        "model": model_id,
+        "instances": [
+            {
+                "prompt": prompt,
+                "image": {
+                    "mimeType": image_mime,
+                    "bytesBase64Encoded": f"<omitted, raw_image_bytes={len(image_bytes)}, approx_b64_len={b64_len}>",
+                },
+            }
+        ],
+        "parameters": p,
+    }
+
+
+def _veo_print_request_debug(label: str, payload: dict) -> None:
+    print(f"\n=== Veo 請求除錯 ({label}) ===\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n=== 結束 ===\n")
+
+
+# 非同步影片任務（記憶體內；重啟服務後 job_id 失效）
+_video_jobs_lock = threading.Lock()
+_video_jobs: dict = {}
+
+# 輪詢 Google 長時間作業的間隔（秒）
+_VEO_POLL_INTERVAL_SEC = 8
+
 
 # 全局變數存儲模型
 sam = None
@@ -27,16 +211,30 @@ async def lifespan(app: FastAPI):
             print(f"警告: 模型文件不存在: {model_path}")
             print("服務將啟動，但無法進行圖片分割")
         else:
-            device = torch.device('cpu')
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             sam = sam_model_registry["vit_b"](checkpoint=model_path)
             sam.to(device=device)
-            mask_generator = SamAutomaticMaskGenerator(sam)
+            # 平衡速度與覆蓋率；無 GPU 時全圖自動分割仍可能較慢
+            mask_generator = SamAutomaticMaskGenerator(
+                sam,
+                points_per_side=32,
+                pred_iou_thresh=0.80,
+                stability_score_thresh=0.88,
+                crop_n_layers=0,
+                crop_n_points_downscale_factor=2,
+                min_mask_region_area=0,
+            )
             predictor = SamPredictor(sam)
-            print("SAM 模型載入成功")
+            print(f"SAM 模型載入成功，裝置: {device}")
     except Exception as e:
         print(f"載入模型時發生錯誤: {e}")
         print("服務將啟動，但無法進行圖片分割")
-    
+
+    print(
+        "提示：/generate-video 任務存在於單一進程記憶體。請勿使用多 Worker；"
+        "開發時若使用 uvicorn --reload，檔案變更重載後舊 job_id 會失效，需重新生成。"
+    )
+
     yield
     
     # 清理資源（如果需要）
@@ -44,14 +242,196 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# CORS middleware
+# CORS middleware（開發模式：允許所有來源）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def mask_to_rle(segmentation: np.ndarray) -> dict:
+    """
+    將 boolean / 0-1 mask 轉成簡單 RLE（run-length encoding），以減少傳輸量。
+    格式為：
+    {
+        "size": [height, width],
+        "counts": [run1, run2, ...]  # 按照 COCO 慣例，從第一個像素開始的連續長度交替表示 0/1
+    }
+    """
+    if segmentation.dtype != np.uint8 and segmentation.dtype != bool:
+        segmentation = segmentation.astype(np.uint8)
+
+    # 轉成 0/1 並攤平成一維向量（row-major）
+    if segmentation.dtype == bool:
+        arr = segmentation.astype(np.uint8)
+    else:
+        arr = (segmentation > 0).astype(np.uint8)
+
+    h, w = arr.shape[:2]
+    flat = arr.reshape(-1)
+
+    # RLE 編碼
+    counts = []
+    prev = 0
+    run_len = 0
+
+    for v in flat:
+        if v == prev:
+            run_len += 1
+        else:
+            counts.append(run_len)
+            run_len = 1
+            prev = v
+
+    counts.append(run_len)
+
+    return {
+        "size": [int(h), int(w)],
+        "counts": [int(c) for c in counts],
+    }
+
+
+def mask_to_polygon_flat(segmentation: np.ndarray) -> list:
+    """
+    從二值 / bool mask 擷取最外層輪廓，回傳 Konva Line 可用的平坦座標 [x1,y1,x2,y2,...]。
+    若無有效輪廓則回傳空 list。
+    """
+    if segmentation is None or segmentation.size == 0:
+        return []
+
+    if segmentation.dtype == bool:
+        mask_u8 = (segmentation.astype(np.uint8)) * 255
+    else:
+        mask_u8 = (segmentation > 0).astype(np.uint8) * 255
+
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return []
+
+    main = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(main) < 1:
+        return []
+
+    peri = cv2.arcLength(main, True)
+    epsilon = max(0.5, 0.001 * peri)
+    approx = cv2.approxPolyDP(main, epsilon, True)
+
+    if approx is None or len(approx) < 3:
+        return []
+
+    flat = approx.reshape(-1).astype(int).tolist()
+    return [int(v) for v in flat]
+
+
+@app.post("/segment-everything")
+async def segment_everything(
+    file: UploadFile = File(...),
+    max_masks: int = 100,
+    min_area: int = 0,
+):
+    """
+    使用 SAM 的 SamAutomaticMaskGenerator 對整張圖片做自動分割（Segment Everything）。
+    回傳每個物件的：
+    - bbox: [x, y, w, h]
+    - area: 像素數
+    - score / stability_score
+    - rle: 輕量化的 RLE mask（size + counts）
+    - polygon: 輪廓平坦座標 [x1, y1, x2, y2, ...]（供前端 Konva.Line 繪製貼邊外框）
+
+    參數：
+    - max_masks: 最多回傳幾個物件（依 score 排序，預設 100）
+    - min_area: 最小面積（像素）門檻，小於此值的物件會被過濾，預設 0 不過濾
+    """
+    # 檢查模型是否載入
+    if mask_generator is None:
+        raise HTTPException(status_code=503, detail="模型尚未載入，請檢查模型文件是否存在")
+
+    # 檢查檔案類型
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只接受圖片文件")
+
+    try:
+        # 讀取圖片並轉為 RGB numpy array
+        image_data = await file.read()
+        image = Image.open(BytesIO(image_data))
+        image = image.convert("RGB")
+        image_array = np.array(image)
+
+        # 產生所有 masks（自動分割）
+        # SamAutomaticMaskGenerator 會回傳一個 list，裡面每個元素是 dict，例如：
+        # {
+        #   'segmentation': numpy.bool_[H, W],
+        #   'area': int,
+        #   'bbox': [x, y, w, h],
+        #   'predicted_iou': float,
+        #   'stability_score': float,
+        #   ...
+        # }
+        masks = mask_generator.generate(image_array)
+
+        # 依 score 排序（predicted_iou 為主），由大到小
+        masks_sorted = sorted(
+            masks,
+            key=lambda m: float(m.get("predicted_iou", m.get("stability_score", 0.0))),
+            reverse=True,
+        )
+
+        results = []
+        for m in masks_sorted:
+            area = int(m.get("area", 0))
+            if min_area > 0 and area < min_area:
+                continue
+
+            segmentation = m["segmentation"]  # bool mask
+            bbox = m.get("bbox", None)
+
+            if bbox is None:
+                # 若 bbox 不存在，從 segmentation 推出一個 bbox
+                ys, xs = np.where(segmentation)
+                if len(xs) == 0 or len(ys) == 0:
+                    continue
+                x_min, x_max = xs.min(), xs.max()
+                y_min, y_max = ys.min(), ys.max()
+                bbox = [
+                    int(x_min),
+                    int(y_min),
+                    int(x_max - x_min + 1),
+                    int(y_max - y_min + 1),
+                ]
+
+            # 轉成 RLE，減少資料量
+            rle = mask_to_rle(segmentation)
+            polygon = mask_to_polygon_flat(segmentation)
+
+            result = {
+                "bbox": [int(v) for v in bbox],
+                "area": area,
+                "score": float(m.get("predicted_iou", 0.0)),
+                "stability_score": float(m.get("stability_score", 0.0)),
+                "rle": rle,
+                "polygon": polygon,
+            }
+            results.append(result)
+
+            if len(results) >= max_masks:
+                break
+
+        return {"masks": results}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"處理圖片時發生錯誤（segment-everything）: {e}")
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"處理圖片時發生錯誤（segment-everything）: {str(e)}",
+        )
 
 @app.post("/segment-image")
 async def segment_image(file: UploadFile = File(...)):
@@ -580,6 +960,266 @@ async def segment_with_mask(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"處理圖片時發生錯誤: {str(e)}")
 
+
+def _decode_base64_image_data(image_data: str) -> bytes:
+    """接受純 Base64 或 data:image/...;base64, 前綴。"""
+    s = (image_data or "").strip()
+    if "base64," in s:
+        s = s.split("base64,", 1)[1]
+    s = s.replace("\n", "").replace("\r", "")
+    try:
+        return base64.b64decode(s, validate=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"無效的 image_data（Base64）: {e}") from e
+
+
+def _download_video_from_gcs_uri(gs_uri: str) -> tuple[bytes, str]:
+    """從 gs://bucket/object 下載影片位元組（需 Service Account 有該物件讀取權限）。"""
+    from google.cloud import storage
+
+    if not gs_uri.startswith("gs://"):
+        raise ValueError(f"非 GCS URI: {gs_uri}")
+    rest = gs_uri[5:]
+    if "/" not in rest:
+        raise ValueError(f"無效的 GCS URI: {gs_uri}")
+    bucket_name, blob_path = rest.split("/", 1)
+    client = storage.Client(project=VERTEX_AI_PROJECT)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_path)
+    data = blob.download_as_bytes()
+    mime = blob.content_type or "video/mp4"
+    return data, mime
+
+
+def _run_veo_video_job(job_id: str, image_bytes: bytes, prompt: str) -> None:
+    """於背景執行緒內呼叫 Veo，並更新 _video_jobs。任務開始即納入 try，確保任何例外都寫入 failed。"""
+    from google.genai import types
+
+    try:
+        with _video_jobs_lock:
+            if job_id not in _video_jobs:
+                print(
+                    f"Veo 背景任務中止：job_id 不在 _video_jobs（可能主進程已重載）: {job_id}"
+                )
+                return
+            _video_jobs[job_id]["status"] = "running"
+            _video_jobs[job_id]["message"] = "正在生成影片…"
+
+        if genai_client is None:
+            raise RuntimeError("GenAI Client 未初始化，請檢查 vertex-key.json 與 Vertex AI 設定")
+
+        _install_veo_generate_videos_safety_patch()
+
+        gcs_out = VEO_OUTPUT_GCS_URI
+        config_kwargs = {
+            "duration_seconds": int(os.environ.get("VEO_DURATION_SECONDS", "5")),
+            "aspect_ratio": os.environ.get("VEO_ASPECT_RATIO", "16:9"),
+            "number_of_videos": 1,
+            "person_generation": VEO_PERSON_GENERATION or "allow_adult",
+        }
+        if gcs_out:
+            config_kwargs["output_gcs_uri"] = gcs_out
+
+        safety_list = _veo_safety_settings_as_genai_types()
+        veo_debug_json = _veo_debug_predict_request_json(
+            model_id=VEO_MODEL_ID,
+            prompt=prompt,
+            image_bytes=image_bytes,
+            image_mime="image/png",
+            config_kwargs=config_kwargs,
+            safety_settings=safety_list,
+            person_generation=config_kwargs["person_generation"],
+        )
+
+        _veo_tls.safety_settings = safety_list
+        try:
+            try:
+                operation = genai_client.models.generate_videos(
+                    model=VEO_MODEL_ID,
+                    source=types.GenerateVideosSource(
+                        prompt=prompt,
+                        image=types.Image(
+                            image_bytes=image_bytes, mime_type="image/png"
+                        ),
+                    ),
+                    config=types.GenerateVideosConfig(**config_kwargs),
+                )
+            except Exception as exc:
+                _veo_print_request_debug(
+                    f"generate_videos 例外 job={job_id}", veo_debug_json
+                )
+                try:
+                    from google.genai.errors import APIError
+
+                    if isinstance(exc, APIError):
+                        print(f"Veo APIError.details: {exc.details!r}")
+                        resp = getattr(exc, "response", None)
+                        if resp is not None and hasattr(resp, "text"):
+                            print(f"Veo APIError HTTP body:\n{resp.text}")
+                except ImportError:
+                    pass
+                raise
+        finally:
+            if hasattr(_veo_tls, "safety_settings"):
+                delattr(_veo_tls, "safety_settings")
+
+        with _video_jobs_lock:
+            _video_jobs[job_id]["gcp_operation_name"] = operation.name
+
+        while operation.done is not True:
+            time.sleep(_VEO_POLL_INTERVAL_SEC)
+            operation = genai_client.operations.get(operation)
+            with _video_jobs_lock:
+                _video_jobs[job_id]["message"] = "影片生成進行中，請稍候…"
+
+        if operation.error:
+            _veo_print_request_debug(
+                f"長運算完成但回傳錯誤 job={job_id}", veo_debug_json
+            )
+            err = operation.error
+            raise RuntimeError(str(err))
+
+        result = operation.response or operation.result
+        if not result or not result.generated_videos:
+            raise RuntimeError("完成後未取得影片結果")
+
+        gv0 = result.generated_videos[0]
+        video = gv0.video if gv0 else None
+        if not video:
+            raise RuntimeError("回應中無 video 物件")
+
+        raw: bytes
+        mime = video.mime_type or "video/mp4"
+        if video.video_bytes:
+            raw = video.video_bytes
+        elif video.uri and video.uri.startswith("gs://"):
+            with _video_jobs_lock:
+                _video_jobs[job_id]["message"] = "正在從雲端儲存取得影片…"
+            raw, mime = _download_video_from_gcs_uri(video.uri)
+        else:
+            raise RuntimeError(f"未取得影片位元組或 GCS URI: uri={video.uri!r}")
+
+        with _video_jobs_lock:
+            _video_jobs[job_id]["status"] = "completed"
+            _video_jobs[job_id]["message"] = "完成"
+            _video_jobs[job_id]["video_bytes"] = raw
+            _video_jobs[job_id]["video_mime_type"] = mime
+            # 大檔不塞 Base64，改以 /video-result/{job_id} 播放
+            max_b64 = int(os.environ.get("VEO_MAX_BASE64_BYTES", str(2 * 1024 * 1024)))
+            if len(raw) <= max_b64:
+                _video_jobs[job_id]["video_base64"] = base64.b64encode(raw).decode("ascii")
+            else:
+                _video_jobs[job_id]["video_base64"] = None
+            _video_jobs[job_id]["video_url"] = f"/video-result/{job_id}"
+
+    except Exception as e:
+        print(f"Veo 任務 {job_id} 失敗: {e}")
+        import traceback
+
+        traceback.print_exc()
+        with _video_jobs_lock:
+            if job_id in _video_jobs:
+                _video_jobs[job_id]["status"] = "failed"
+                _video_jobs[job_id]["message"] = str(e)
+                _video_jobs[job_id]["error"] = str(e)
+
+
+class GenerateVideoBody(BaseModel):
+    image_data: str = Field(..., description="透明背景物件圖，Base64 或 data:image/png;base64,...")
+    prompt: str = Field(..., description="動作／影片描述")
+
+
+@app.post("/generate-video")
+async def generate_video(body: GenerateVideoBody):
+    """
+    建立 Veo Image-to-Video 背景任務，立即回傳 job_id。
+    請以 GET /video-status/{job_id} 輪詢；完成後可用 video_url 或 video_base64。
+    """
+    if genai_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Veo 未就緒：請確認 vertex-key.json、Vertex AI API 與專案權限",
+        )
+    prompt = (body.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt 不可為空")
+
+    image_bytes = _decode_base64_image_data(body.image_data)
+    if len(image_bytes) < 32:
+        raise HTTPException(status_code=400, detail="圖片資料過短或損毀")
+
+    job_id = str(uuid.uuid4())
+    with _video_jobs_lock:
+        _video_jobs[job_id] = {
+            "status": "pending",
+            "message": "已排入佇列",
+            "prompt": prompt[:500],
+            "error": None,
+            "video_bytes": None,
+            "video_mime_type": None,
+            "video_base64": None,
+            "video_url": None,
+            "gcp_operation_name": None,
+        }
+
+    thread = threading.Thread(
+        target=_run_veo_video_job,
+        args=(job_id, image_bytes, prompt),
+        daemon=True,
+    )
+    thread.start()
+
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/video-status/{job_id}")
+async def video_status(job_id: str):
+    """
+    查詢影片生成狀態；完成時含 video_url，可能含 video_base64（較小檔案時）。
+    若查無任務仍回傳 200 + status=failed（避免輪詢收到 404）；常見原因：uvicorn --reload
+    重載清空記憶體、或多 Worker 導致 POST/GET 打到不同進程。
+    """
+    with _video_jobs_lock:
+        job = _video_jobs.get(job_id)
+    if not job:
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "message": "找不到此任務。可能原因：伺服器已重載（--reload）、使用多個 Worker、或 job_id 錯誤。請重新提交生成。",
+            "error": "JOB_NOT_FOUND",
+        }
+
+    out = {
+        "job_id": job_id,
+        "status": job["status"],
+        "message": job.get("message"),
+    }
+    if job["status"] == "failed":
+        out["error"] = job.get("error") or job.get("message")
+    if job["status"] == "completed":
+        out["video_mime_type"] = job.get("video_mime_type") or "video/mp4"
+        out["video_url"] = job.get("video_url")
+        if job.get("video_base64"):
+            out["video_base64"] = job["video_base64"]
+    return out
+
+
+@app.get("/video-result/{job_id}")
+async def video_result(job_id: str):
+    """任務完成後，以 MP4（或其它 mime）串流回傳，供 <video src> 使用。"""
+    with _video_jobs_lock:
+        job = _video_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="找不到此 job_id")
+    if job["status"] != "completed":
+        raise HTTPException(status_code=409, detail=f"任務尚未完成，狀態: {job['status']}")
+    raw = job.get("video_bytes")
+    if not raw:
+        raise HTTPException(status_code=500, detail="內部錯誤：遺失影片資料")
+    mime = job.get("video_mime_type") or "video/mp4"
+    return Response(content=raw, media_type=mime)
+
+
 @app.get("/")
 async def root():
     return {
@@ -590,6 +1230,9 @@ async def root():
             "docs": "/docs",
             "redoc": "/redoc",
             "segment_image": "/segment-image (POST)",
-            "segment_with_mask": "/segment-with-mask (POST)"
+            "segment_with_mask": "/segment-with-mask (POST)",
+            "generate_video": "/generate-video (POST)",
+            "video_status": "/video-status/{job_id} (GET)",
+            "video_result": "/video-result/{job_id} (GET)"
         }
     }

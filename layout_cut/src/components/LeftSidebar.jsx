@@ -22,8 +22,12 @@ function LeftSidebar({
   onRotateLayer,
   onToggleLayerVisible,
   onDeleteLayer,
+  onBackToSelection,
   currentStep,
   segmentedMasks,
+  interactionMode,
+  onToggleMode,
+  hasAutoMasks,
   isBrushMode,
   toolType,
   onSetToolType,
@@ -90,6 +94,23 @@ function LeftSidebar({
       {/* 控制面板 - 只在圖層分割完成後顯示 */}
       {layers.length > 0 && (
         <div style={{ padding: '15px', flexShrink: 0 }}>
+          <button
+            onClick={onBackToSelection}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              marginBottom: '10px',
+              fontSize: '13px',
+              backgroundColor: '#ffedd5',
+              color: '#9a3412',
+              border: '1px solid #fdba74',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontWeight: '600'
+            }}
+          >
+            重新選擇物件 (Back to Selection)
+          </button>
           <ControlPanel
             selectedLayers={selectedLayers}
             selectedLayerIndex={selectedLayerIndex}
@@ -110,9 +131,56 @@ function LeftSidebar({
         segmentedMasks={segmentedMasks}
       />
 
+      {/* 模式切換：智慧點擊 / 手畫筆刷 */}
+      {baseImage && layers.length === 0 && (
+        <div
+          style={{
+            padding: '12px 15px',
+            display: 'flex',
+            gap: '8px',
+            backgroundColor: '#fff',
+            borderBottom: '1px solid #e0e0e0',
+            flexShrink: 0
+          }}
+        >
+          <button
+            onClick={() => onToggleMode('smart')}
+            disabled={!hasAutoMasks}
+            style={{
+              flex: 1,
+              padding: '8px 10px',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: hasAutoMasks ? 'pointer' : 'not-allowed',
+              backgroundColor: interactionMode === 'smart' ? '#4a90e2' : '#f0f0f0',
+              color: interactionMode === 'smart' ? '#fff' : '#333',
+              opacity: hasAutoMasks ? 1 : 0.5,
+              fontWeight: interactionMode === 'smart' ? 600 : 400
+            }}
+          >
+            智慧點擊
+          </button>
+          <button
+            onClick={() => onToggleMode('brush')}
+            style={{
+              flex: 1,
+              padding: '8px 10px',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              backgroundColor: interactionMode === 'brush' ? '#4a90e2' : '#f0f0f0',
+              color: interactionMode === 'brush' ? '#fff' : '#333',
+              fontWeight: interactionMode === 'brush' ? 600 : 400
+            }}
+          >
+            手畫筆刷
+          </button>
+        </div>
+      )}
+
       {/* 畫筆工具 - 置於說明文字下方，圖層列表上方 */}
-      {/* 當圖層列表有圖層時，隱藏筆刷工具 */}
-      {layers.length === 0 && (
+      {/* 當圖層列表有圖層時，隱藏筆刷工具；僅在 brush 模式顯示 */}
+      {layers.length === 0 && interactionMode === 'brush' && (
         <BrushTool
           isBrushMode={isBrushMode}
           toolType={toolType}

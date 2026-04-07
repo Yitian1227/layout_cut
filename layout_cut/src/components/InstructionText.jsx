@@ -2,7 +2,11 @@ import React from 'react'
 
 function InstructionText({ currentStep, baseImage, segmentedMasks }) {
   // 在上傳完圖片後的畫面（step 3 且有圖片但還沒有分割結果）
-  if (currentStep === 3 && baseImage && segmentedMasks.length === 0) {
+  if (
+    (currentStep === 3 || currentStep === 4) &&
+    baseImage &&
+    segmentedMasks.length === 0
+  ) {
     return (
       <div style={{
         padding: '15px',

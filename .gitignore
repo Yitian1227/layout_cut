@@ -54,6 +54,9 @@ build/
 logs/
 *.log
 
+# GCP / Vertex AI 憑證（勿提交）
+vertex-key.json
+
 # 環境變數
 .env
 .env.local
